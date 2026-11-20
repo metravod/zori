@@ -1,0 +1,12 @@
+/target
+/zori-runs
+/zori-flows
+*.prompt.txt
+/.serena/
+
+# Local editor sessions and research outputs
+/canvas/
+/docs/research/
+/roadmap-*.md
+/.DS_Store
+/.env

@@ -1,0 +1,50 @@
+# The motivating case: one task, two agents, blind to each other, then a join.
+# Each reviewer gets the same prompt from ${inputs.prompt} via a different CLI
+# and model; the joiner reads both outputs.
+#
+# Dry-run first (spends nothing):
+#   cargo run -- run examples/fanout-review.yml --dry-run \
+#     --input prompt="Review the diff in git status for correctness bugs"
+# Then for real:
+#   cargo run -- run examples/fanout-review.yml --input prompt="..."
+#
+# Uses each CLI’s configured default model.
+name: fanout-review
+cwd: .
+default_timeout_secs: 900
+# two reviewers in parallel, then the joiner
+max_parallel: 2
+
+tasks:
+  - id: codex-review
+    harness: codex
+    workspace: flow
+    # a read-only reviewer: sandbox is read-only, overrides the connector default
+    args: ["-s", "read-only"]
+    in: "${inputs.prompt}"
+    out: "Findings only: each bug with file:line and a one-line fix. Say 'no findings' if clean."
+
+  - id: coddy-review
+    harness: coddy
+    workspace: flow
+    in: "${inputs.prompt}"
+    out: "Findings only: each bug with file:line and a one-line fix. Say 'no findings' if clean."
+
+  - id: crosscheck
+    harness: coddy
+    depends_on: [codex-review, coddy-review]
+    # consume both upstream outputs — the join
+    in: |
+      You are the cross-checker. Two independent reviewers looked at the same
+      thing. Merge their findings, drop duplicates, and flag which findings both
+      reviewers agreed on (those are the trustworthy ones).
+
+      ## codex
+      ${steps.codex-review.output}
+
+      ## coddy
+      ${steps.coddy-review.output}
+    out: |
+      A ranked list. Top section: agreed findings (both reviewers). Then unique
+      findings, each marked which reviewer raised it. If both said
+      'no findings', reply exactly: CONSISTENT-CLEAN.

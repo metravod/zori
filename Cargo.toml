@@ -1,0 +1,28 @@
+[package]
+name = "zori"
+version = "0.1.0"
+edition = "2021"
+description = "Run local CLI coding agents in parallel and connect their outputs with YAML flows."
+license = "MIT"
+repository = "https://github.com/metravod/zori"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "process", "macros", "time", "io-util", "sync", "fs", "signal"] }
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+serde_json = "1"
+anyhow = "1"
+sha2 = "0.10"
+clap = { version = "4", features = ["derive"] }
+axum = { version = "0.7", features = ["tokio", "json", "query"] }
+tower-http = { version = "0.5", features = ["fs", "cors", "trace"] }
+futures-util = "0.3"
+async-stream = "0.3"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

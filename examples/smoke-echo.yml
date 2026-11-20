@@ -1,0 +1,36 @@
+# zori smoke test: the DAG mechanics without spending a single model token.
+# Run: cargo run -- run examples/smoke-echo.yml --dry-run
+#      cargo run -- run examples/smoke-echo.yml
+name: smoke-echo
+default_timeout_secs: 30
+
+tasks:
+  - id: draft
+    harness: echo
+    in: "The quick brown fox"
+    out: "reply with the same text"
+
+  - id: translate
+    harness: echo
+    depends_on: [draft]
+    # consumes the upstream task's output — the ${...} plumbing
+    in: "translate: ${steps.draft.output}"
+
+  - id: reviewer-a
+    harness: echo
+    depends_on: [draft]
+    in: "review A: ${steps.draft.output}"
+
+  - id: reviewer-b
+    harness: echo
+    depends_on: [draft]
+    in: "review B: ${steps.draft.output}"
+
+  - id: join
+    harness: echo
+    depends_on: [translate, reviewer-a, reviewer-b]
+    in: |
+      join three upstream results:
+      A: ${steps.reviewer-a.output}
+      B: ${steps.reviewer-b.output}
+      T: ${steps.translate.output}

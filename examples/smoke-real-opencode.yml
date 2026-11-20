@@ -1,0 +1,13 @@
+# Plumbing smoke against a REAL OpenCode binary — proves the connector launches
+# `opencode run`, passes the prompt positionally, and captures the reply
+# from stdout (spinner/tool noise stays on stderr). Costs a few tokens.
+# Model ids are `provider/model` — list yours with `opencode models`.
+# A trivial prompt so it answers fast without reaching for tools.
+name: smoke-real-opencode
+cwd: .
+default_timeout_secs: 180
+
+tasks:
+  - id: pong
+    harness: opencode
+    in: "Reply with exactly the single word PONG and nothing else."

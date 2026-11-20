@@ -1,0 +1,61 @@
+# The motivating case: one task, two agents, blind to each other, then a join.
+# Each reviewer gets the same prompt from ${inputs.prompt} via a different CLI
+# and model; the joiner reads both outputs.
+#
+# Dry-run first (spends nothing):
+#   cargo run -- run examples/issue-planning.yml --dry-run \
+#     --input prompt="Review the diff in git status for correctness bugs"
+# Then for real:
+#   cargo run -- run examples/issue-planning.yml --input prompt="..."
+#
+# Uses each CLI’s configured default model.
+name: issue-planning
+cwd: .
+default_timeout_secs: 900
+# two reviewers in parallel, then the joiner
+max_parallel: 2
+
+tasks:
+  - id: codex-review
+    harness: codex
+    in: "${inputs.prompt}"
+    out: "Дорожная карта разработки фичи"
+
+  - id: coddy-review
+    harness: coddy
+    in: "${inputs.prompt}"
+    out: "Дорожная карта разработки фичи"
+
+  - id: crosscheck
+    harness: coddy
+    depends_on: [codex-review, coddy-review]
+    # consume both upstream outputs — the join. Each reviewer works isolated in
+    # its own work dir (${steps.<id>.dir}/work); if a branch wrote files (a
+    # roadmap document, notes), they are there, not in the repo.
+    in: |
+      Ты подводишь итог разработки дорожной карты для разработки фичи.
+      Смерджи все результаты других исследователей, забери из каждого самые сильные идеи
+      и сформируй окончательную дорожную карту. Если ветка писала файлы, они лежат
+      в её рабочем каталоге: codex — ${steps.codex-review.dir}/work, coddy —
+      ${steps.coddy-review.dir}/work.
+
+      ## codex
+      ${steps.codex-review.output}
+
+      ## coddy
+      ${steps.coddy-review.output}
+    out: |
+      Дорожная карта, составленная на основе собранных двумя независимыми исследователями идей.
+
+  - id: write-comment
+    harness: codex
+    depends_on: [crosscheck]
+    # consume the join
+    in: |
+      Тебе надо подготовить черновик сообщения для issue - подтверждение, что юзер берет этот issue
+      в работу и краткое описание того, как будет реализована эта фича
+
+      ## Дорожная карта
+      ${steps.crosscheck.output}
+    out: |
+      Черновик комментария к ишью на русском и английском.

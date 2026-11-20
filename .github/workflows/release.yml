@@ -1,0 +1,74 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+          - runner: macos-15
+            target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Select stable Rust
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustup component add clippy
+      - name: Verify source and build
+        run: |
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked
+          for suite in web/*.test.mjs; do node "$suite"; done
+          cargo build --release --locked --target "$TARGET"
+      - name: Smoke-test and package
+        shell: bash
+        run: |
+          set -eu
+          binary="target/$TARGET/release/zori"
+          test "$("$binary" --version)" = "zori ${GITHUB_REF_NAME#v}"
+          "$binary" run examples/smoke-echo.yml
+          mkdir -p stage dist
+          cp "$binary" LICENSE stage/
+          tar -czf "dist/zori-$GITHUB_REF_NAME-$TARGET.tar.gz" -C stage zori LICENSE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zori-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish archives and checksums
+        working-directory: dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha256sum *.tar.gz > SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "Zori $GITHUB_REF_NAME" --generate-notes *.tar.gz SHA256SUMS

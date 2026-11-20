@@ -1,0 +1,11 @@
+# Plumbing smoke against a REAL agent binary — proves the connector launches
+# coddy, passes the prompt, and captures stdout. Costs a few tokens.
+# A trivial prompt so it answers fast without reaching for tools.
+name: smoke-real-coddy
+cwd: .
+default_timeout_secs: 180
+
+tasks:
+  - id: pong
+    harness: coddy
+    in: "Reply with exactly the single word PONG and nothing else."

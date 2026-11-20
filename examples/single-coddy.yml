@@ -1,0 +1,20 @@
+# Your own task, one agent, chosen model. The smallest useful flow.
+#
+# Run it:
+#   cargo run -- run examples/single-coddy.yml --input prompt="Read README.md and list the three biggest risks"
+#
+name: single-coddy
+# Point cwd at whatever repo you want the agent to work in.
+cwd: .
+default_timeout_secs: 600
+
+tasks:
+  - id: think
+    harness: coddy
+    workspace: flow
+    # ${inputs.prompt} is filled from the command line with --input prompt=...
+    in: "${inputs.prompt}"
+    # Plain words for what you want back; appended to the prompt as "# Output".
+    out: |
+      A short markdown report: the risks, each with a one-line reason and the
+      file it lives in. No preamble.
