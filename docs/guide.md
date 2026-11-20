@@ -13,7 +13,7 @@ zori-runs/<flow>-<unix-millis>/
   state.json                   the ui server's live state (zori ui runs)
   sessions/                    coddy session storage for this run (ui runs)
   tasks/<task>/work/           the task's isolated working directory
-  tasks/<task>/<attempt>/      one attempt: r0 = first run, t<secs> = steer
+  tasks/<task>/<attempt>/      one attempt: r0 = first run, later IDs = follow-up attempts
     prompt.txt  out.txt  err.txt  meta.json
 ```
 
@@ -51,79 +51,11 @@ default and has **no auth**, so keep `--bind` on `127.0.0.1` unless you front it
 yourself. `--flows-root` (`zori-flows`, created if missing) is the directory
 **⤓ Шаблон** writes saved pipelines to and the **Пайплайны** dropdown reads back.
 
-There is **one canvas** — you build the flow and watch/steer a run on the same
-blocks, no separate "Run" vs "Build" view:
+Each block on the canvas represents one task. Open a block for its starting prompt, transcript and configuration. The status indicator follows the attached run. Pan the canvas by dragging its background and use the zoom or fit controls to bring a branch into view.
 
-- **The blocks are the view.** Each task is a draggable block (id, harness ·
-  model, prompt preview). Drag to place it; edges, execution levels and the
-  YAML pane redraw as you go. There is **one layout**: blocks sit in columns,
-  left to right, one column per execution level — the order the runner
-  executes them, which is the Airflow-like shape a DAG is drawn in. There is
-  no edit-mode layout to fall back to; the plainer vertical card view went away
-  with the separate Run screen.
-- **The canvas is an infinite plane under the UI** (Airflow-style): it fills
-  the strip edge to edge and the right panel floats *on top* of it, so opening
-  or resizing the panel never squeezes the graph. Drag the empty background to
-  pan the plane (there are no scrollbars and no edges — it is a transform, not
-  a scroll region); the **wheel zooms around the cursor** (trackpad pinch
-  works too), and the floating pill at the bottom-left offers **− / % / +**
-  and **⤢ fit** — a flow loads fitted into the visible strip, and a selected
-  block is panned into it. Node drags divide by zoom, so blocks stick to the
-  cursor at any level.
-- **Attach a run, get live status on the blocks.** Pick a run in the header
-  (or hit **▶ Run**) and its flow loads onto this canvas: each
-  block grows a status dot and a progress/result line (running · done · failed
-  · stale · skipped), fed live over SSE. *Detach* (choose "editing — no run")
-  to keep editing without the overlay.
-- **Click a block → its chat, with the config folded above it.** The
-  floating right panel is pure **chat**: the block's *starting prompt* is the first
-  card
-  (editable, `out` tucked under it), and the dialogue with its model — plus
-  *Send & steer* / *Rerun* — flows underneath. Above the chat sits a
-  collapsible **config strip**: название (id), harness, модель (live catalog
-  with ↻), зависимости — purely checkboxes — and a per-task **directory**
-  (`cwd`, overriding the flow cwd and the isolated `tasks/<id>/work` default).
-  The toggle doubles as a one-line summary of the block; edits commit live —
-  no OK button; Esc or a click on empty canvas drops the selection. The flow's
-  **YAML** (levels + the file that will be written) is a small button in the
-  panel's top-right corner. A fresh page opens on the default graph with the
-  blank block's prompt card ready — authoring starts in the chat.
-- **A minimal top bar.** The header is the pixel `zori` logo plus exactly the
-  flow-level essentials: **название** (name), **директория запуска** (default
-  `cwd`), the **＋ Задача ▾** split button and **Save** / **▶ Run**. The caret
-  opens the two block kinds — **Задача** (a task block with an agent harness)
-  and **Промпт** (a starter `prompt` block, no process) — and the button
-  remembers the last kind used. Secondary flow ops (**открыть…**, **Новый**,
-  **Inputs**) live in the YAML pop-up, not the header; *Rerun stale* appears
-  next to the run selector only while a run is attached.
-- **Steer / rerun from the chat.** *Send & steer* resumes the agent's *own*
-  session (`coddy -session-id`, `codex exec resume <thread_id>`,
-  `opencode run -s <session_id>`) with your message — context intact, proven on
-  all three harnesses. The corrected output replaces the node's output and its
-  downstream tasks are marked **stale**; *Rerun* the block (or *Rerun stale* in
-  the header) to re-derive them from the fix.
-- **A failed node is rerunnable — with the fix.** Rerun works on `failed` and
-  `skipped` nodes too (not just done/stale), and it is a *fix-and-retry* loop:
-  correct the block (e.g. a typo'd model name) and hit **⟳ Rerun** right in its
-  chat — the re-run executes the corrected config, not the
-  boot-time one; the corrected flow file is written back, so the fix survives a
-  server restart. Ids and dependencies are frozen on a live run (change those
-  by saving a new flow); everything else — model, prompt, out, cwd, timeout,
-  args, env, optional — may be corrected. A rerun that dies at the driver
-  level records `failed` honestly instead of hanging in `running`.
-- **Agent answers render as Markdown.** The CLIs answer in markdown, so the
-  dialogue renders headings, lists, task lists, tables, fenced code, quotes and
-  links instead of printing the asterisks. Text is HTML-escaped before any
-  markup is introduced, so a model (or a log line) cannot inject markup; only
-  `http(s)`/`mailto` links become clickable. Your own turns and the **MD**
-  toggle show the raw text exactly as the harness printed it (the choice is
-  remembered). Renderer: `MD` in `web/index.html`, covered by
-  `node web/md.test.mjs`. The layout's level computation is covered the same
-  way by `node web/layout.test.mjs`.
+After a turn finishes, send a follow-up in the task's chat to resume the same Coddy, Codex or OpenCode session. A changed output marks downstream tasks stale. Rerun one of those tasks, or rerun the stale part of the graph. If a task failed, you can correct its prompt, model or other execution settings before retrying. Save a new flow to change task IDs or dependencies.
 
-Runs survive closing the tab and restart the server (`state.json` per run).
-Steering works after a task finishes, not mid-turn (mid-turn needs per-harness
-ACP/app-server — deferred). The console has no auth: bind locally.
+The console persists run state on disk and reloads it after a restart. Use the run selector to return to a previous conversation or inspect an earlier attempt.
 
 ### The watchdog: nudges, retries, and questions to you
 
@@ -368,22 +300,9 @@ a fresh clone needs no install step to speak flow. To add one, drop a markdown f
 in `skills/` and wire it into `src/skills.rs`: an `include_str!` const, a resolver
 arm, and its name in the `BUILTINS` list.
 
-So a planner turn hands the model two *kinds* of text, and the line between them is
-the whole safety story. The two skills ride in as **context** (`zori-config` for
-syntax, `zori-planner` for discipline) — yours to override with an explicit `skills`
-list. But the model is also held to a **server-authored** response protocol plus a
-live harness inventory, injected as the closing `# Output` block it is re-armed with
-on every attempt; that text is *not* the model's to change, because a model left to
-its own words in your repo will try to save a file and boot its own pipeline. The
-protocol and the inventory are spelled out under *Propose → confirm → run*.
+### Run a planner proposal
 
-### Propose → confirm → run
-
-The planner chat is fenced so a supermodel left to itself in your repo cannot
-become a free agent. The dialogue runs in phases, and the model may **only
-propose** — it never writes a flow file and never boots a pipeline; saving and
-launching belong to you. The enforcement is server-side, not a request the model
-might ignore:
+The planner receives the selected skills, the installed harness inventory and a server-supplied instruction to return a proposal in chat. Zori's proposal endpoint requires an explicit run request before saving and launching the graph. The underlying agent CLI still runs with its configured tool and filesystem permissions.
 
 1. **Discuss.** The model thinks out loud in plain text — steps, who does each,
    what feeds what, where things run in parallel. No YAML yet.
@@ -406,17 +325,3 @@ might ignore:
    different one — a fresh block carries a fresh hash and is refused), applies the
    missing-inputs gate, writes the flow to `--flows-root`, and boots it as an
    ordinary run. **Отклонить** drops the proposal.
-
-The hard response protocol — "emit one ` ```zori-flow ` block, save nothing, launch
-nothing" — lives in the chat node's `out:` field, so the runner re-arms it as the
-closing `# Output` block on *every* attempt (a steered continuation is held to it
-as firmly as the first reply), and it is server-authored, never the model's own
-words. The same field carries a cheap **harness inventory** of what's actually
-installed on this machine (PATH-only, spawns nothing), so the model plans against
-reality instead of hallucinating a model no CLI has ever seen. The proposal card
-lives in the chat (rendered alongside the watchdog's question cards) and stays
-honest across SSE refreshes; `POST /api/runs/:id/run-proposal` and
-`POST /api/runs/:id/reject-proposal` are the two buttons' endpoints. `src/proposal.rs`
-holds the parse/validate/repair logic; its tests, and the runner's gate tests
-(valid parks · invalid earns one bounded repair turn · budget stops · no block is
-a plain turn · a non-chat flow is never gated), cover the loop on the echo probe.

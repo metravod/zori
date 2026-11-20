@@ -11,11 +11,13 @@ Run one task across several CLI coding agents at once so the operator can compar
 Zori is a Rust CLI and an embedded local web console. A YAML flow connects tasks in a DAG. Each task selects a CLI, can select a model, and can pass its output to downstream tasks. See the [README](../README.md) and [usage guide](../docs/guide.md).
 
 ## Where it lives
-The first public release targets [metravod/zori](https://github.com/metravod/zori), [GitHub Releases](https://github.com/metravod/zori/releases) and [Homebrew](https://github.com/metravod/homebrew-tap) · 2026-11-20 · how: inspect the release and tap
+- [Public repository](https://github.com/metravod/zori), default branch main · how: gh repo view metravod/zori · seen 2026-11-20
+- [Release v0.1.0](https://github.com/metravod/zori/releases/tag/v0.1.0), four native archives and SHA256SUMS · how: gh release view v0.1.0 --repo metravod/zori · seen 2026-11-20
+- [Homebrew formula](https://github.com/metravod/homebrew-tap/blob/main/Formula/zori.rb), version 0.1.0 · how: brew info metravod/tap/zori · seen 2026-11-20
 
 ## Now
-**Verified:** The code includes both runners, session steering, a bounded watchdog, planner proposals, model discovery and embedded skills. The release workflow builds the CLI for macOS and Linux.
-**Not verified:** Full interactive planner-to-run coverage with real agents remains open.
+**Verified:** v0.1.0 passed the Rust and browser-side suites and an echo flow on macOS and GNU/Linux, on both arm64 and x86_64. All four published archives matched the checksum manifest. A Homebrew installation on Apple Silicon ran the README example and served the embedded console over HTTP. See the [release run](https://github.com/metravod/zori/actions/runs/44761947645) and [tap update](https://github.com/metravod/homebrew-tap/actions/runs/44768420484).
+**Not verified:** Full interactive planner-to-run coverage with real agents remains open. See [console verification](threads/console-verification.md).
 
 ## Next
 - Validate the planner proposal and rerun interactions in a browser with installed agents.

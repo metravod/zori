@@ -24,7 +24,7 @@ jobs:
     env:
       TARGET: ${{ matrix.target }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Select stable Rust
@@ -48,7 +48,7 @@ jobs:
           mkdir -p stage dist
           cp "$binary" LICENSE stage/
           tar -czf "dist/zori-$GITHUB_REF_NAME-$TARGET.tar.gz" -C stage zori LICENSE
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: zori-${{ matrix.target }}
           path: dist/*.tar.gz
@@ -60,7 +60,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
