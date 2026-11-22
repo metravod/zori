@@ -159,6 +159,66 @@ pub fn builtin_ids() -> &'static [&'static str] {
     &["prompt", "coddy", "codex", "zcode", "opencode", "echo"]
 }
 
+/// The operator's personal harness store: `~/.zori/harnesses.yml`, a map of
+/// the same shape as a flow's `harnesses:` block (D11 — machine-personal
+/// state that follows the operator, not any project). A personal entry on a
+/// built-in id overrides that built-in everywhere (flows may still refine it
+/// per flow); a new id becomes a first-class harness visible to the console
+/// picker, the Fleet dialog, the planner brief and `zori harnesses`. The
+/// next CLI "just slots in": drop a block in this file, no code change.
+pub fn personal_harnesses() -> BTreeMap<String, HarnessOverride> {
+    personal_harnesses_from(&crate::skills::personal_dir().join("harnesses.yml"))
+}
+
+/// The pure half of [`personal_harnesses`], on an explicit path (test seam —
+/// a unit test must not read the operator's real `~/.zori`). Absent file →
+/// empty; malformed file → empty with a loud warning, the same non-fatal
+/// contract as the fleet and skills stores. The `prompt`/`echo` ids are
+/// refused: they are zori's data plumbing, not agents, and a personal file
+/// must not redefine them out from under every flow.
+pub fn personal_harnesses_from(path: &Path) -> BTreeMap<String, HarnessOverride> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(_) => return BTreeMap::new(),
+    };
+    let map: BTreeMap<String, HarnessOverride> = match serde_yaml::from_str(&text) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!(
+                "  [warning] personal harness file {} unparseable ({e}); ignoring it",
+                path.display()
+            );
+            return BTreeMap::new();
+        }
+    };
+    let mut out = BTreeMap::new();
+    for (id, ov) in map {
+        if matches!(id.as_str(), "prompt" | "echo") {
+            eprintln!(
+                "  [warning] personal harness file {} tries to redefine '{id}' — skipped (zori's plumbing ids)",
+                path.display()
+            );
+            continue;
+        }
+        out.insert(id, ov);
+    }
+    out
+}
+
+/// Every harness id resolvable on this machine without a flow: the built-ins
+/// plus the personal store's ids. What `/api/harnesses`, the console picker,
+/// the planner brief, `zori harnesses` and `zori models` enumerate — one
+/// list, so a personally-added CLI shows up everywhere at once.
+pub fn all_ids() -> Vec<String> {
+    let mut v: Vec<String> = builtin_ids().iter().map(|s| s.to_string()).collect();
+    for id in personal_harnesses().keys() {
+        if !v.contains(id) {
+            v.push(id.clone());
+        }
+    }
+    v
+}
+
 /// The built-in connector table. User overrides are merged on top in
 /// [`resolve`].
 fn builtin(id: &str) -> Option<Connector> {
@@ -316,9 +376,23 @@ fn normalize_env_bin(key: &str, id: &str, raw: &str) -> Result<String> {
     Ok(bin.to_string())
 }
 
-/// Resolve a harness id to a connector, applying an optional config override
-/// and the env-var binary overrides. Unknown ids with no override are an error.
-pub fn resolve(id: &str, override_: Option<&HarnessOverride>) -> Result<Connector> {
+/// Resolve a harness id to a connector. Three layers, tightest last:
+/// built-in → the personal store (`~/.zori/harnesses.yml`) → this flow's
+/// `harnesses:` block. A personal entry on a built-in id refines it; a new
+/// id is defined by the personal store outright (the flow may still refine
+/// it). Unknown ids with neither are an error.
+pub fn resolve(id: &str, flow: Option<&HarnessOverride>) -> Result<Connector> {
+    resolve_with(id, flow, &personal_harnesses())
+}
+
+/// The pure half of [`resolve`], on an explicit personal store (test seam —
+/// a unit test must not depend on the machine's real `~/.zori/harnesses.yml`).
+pub fn resolve_with(
+    id: &str,
+    flow: Option<&HarnessOverride>,
+    personal: &BTreeMap<String, HarnessOverride>,
+) -> Result<Connector> {
+    let personal = personal.get(id).cloned();
     let mut c = builtin(id);
 
     // Allow env override of the binary for the known agent harnesses even
@@ -334,59 +408,109 @@ pub fn resolve(id: &str, override_: Option<&HarnessOverride>) -> Result<Connecto
         }
     }
 
-    let mut c = match c {
-        Some(c) => c,
-        // A user-defined harness must declare at least a command.
-        None => match override_ {
-            Some(o) if o.command.as_ref().map(|v| !v.is_empty()).unwrap_or(false) => {
-                Connector {
-                    id: id.into(),
-                    command: o.command.clone().unwrap(),
-                    model_flag: o.model_flag.clone(),
-                    cwd_flag: o.cwd_flag.clone(),
-                    prompt_via: o.prompt_via.unwrap_or(PromptVia::Arg),
-                    prompt_arg: Some("-p".into()),
-                    prompt_file_flag: o.prompt_file_flag.clone(),
-                    supports_model: o.model_flag.is_some(),
-                    extra_args: vec![],
-                    replaceable_flags: o.replaceable_flags.clone(),
-                    env: BTreeMap::new(),
-                    is_agent: true,
-                }
+    match c {
+        Some(mut c) => {
+            if let Some(p) = &personal {
+                apply_override(&mut c, p);
             }
-            _ => bail!("unknown harness '{id}' (no built-in and no command override)"),
-        },
-    };
-
-    if let Some(o) = override_ {
-        if let Some(cmd) = &o.command {
-            if !cmd.is_empty() {
-                c.command = cmd.clone();
+            if let Some(o) = flow {
+                apply_override(&mut c, o);
             }
+            Ok(c)
         }
-        if o.model_flag.is_some() {
-            c.model_flag = o.model_flag.clone();
-            c.supports_model = c.model_flag.is_some();
-        }
-        if o.cwd_flag.is_some() {
-            c.cwd_flag = o.cwd_flag.clone();
-        }
-        if let Some(pv) = o.prompt_via {
-            c.prompt_via = pv;
-        }
-        if o.prompt_file_flag.is_some() {
-            c.prompt_file_flag = o.prompt_file_flag.clone();
-        }
-        c.extra_args.extend(o.extra_args.iter().cloned());
-        if !o.replaceable_flags.is_empty() {
-            c.replaceable_flags = o.replaceable_flags.clone();
-        }
-        for (k, v) in &o.env {
-            c.env.insert(k.clone(), v.clone());
+        None => {
+            // A user-defined harness must declare at least a command.
+            let o = match (&personal, flow) {
+                (Some(p), Some(f)) => compose_over(f, p),
+                (Some(p), None) => p.clone(),
+                (None, Some(f)) => f.clone(),
+                (None, None) => bail!(
+                    "unknown harness '{id}' (no built-in, nothing in ~/.zori/harnesses.yml, no command override)"
+                ),
+            };
+            user_defined(id, &o)
         }
     }
+}
 
-    Ok(c)
+/// Construct a connector for an id with no built-in behind it: the personal
+/// store or the flow owns the whole CLI contract.
+fn user_defined(id: &str, o: &HarnessOverride) -> Result<Connector> {
+    let command = match o.command.as_ref().filter(|v| !v.is_empty()) {
+        Some(cmd) => cmd.clone(),
+        None => bail!("harness '{id}' needs a command (no built-in and no command override)"),
+    };
+    Ok(Connector {
+        id: id.into(),
+        command,
+        model_flag: o.model_flag.clone(),
+        cwd_flag: o.cwd_flag.clone(),
+        prompt_via: o.prompt_via.unwrap_or(PromptVia::Arg),
+        // `-p` is the historical custom-harness default; an explicit
+        // `prompt_arg:` wins (e.g. a CLI whose print flag is `--prompt`).
+        prompt_arg: o.prompt_arg.clone().or_else(|| Some("-p".into())),
+        prompt_file_flag: o.prompt_file_flag.clone(),
+        supports_model: o.model_flag.is_some(),
+        extra_args: o.extra_args.clone(),
+        replaceable_flags: o.replaceable_flags.clone(),
+        env: o.env.clone(),
+        is_agent: true,
+    })
+}
+
+/// Apply an override on top of any connector (built-in or user-defined):
+/// a `Some(..)` field replaces, `extra_args` append, `env` merges per key.
+fn apply_override(c: &mut Connector, o: &HarnessOverride) {
+    if let Some(cmd) = &o.command {
+        if !cmd.is_empty() {
+            c.command = cmd.clone();
+        }
+    }
+    if o.model_flag.is_some() {
+        c.model_flag = o.model_flag.clone();
+        c.supports_model = c.model_flag.is_some();
+    }
+    if o.cwd_flag.is_some() {
+        c.cwd_flag = o.cwd_flag.clone();
+    }
+    if let Some(pv) = o.prompt_via {
+        c.prompt_via = pv;
+    }
+    if o.prompt_arg.is_some() {
+        c.prompt_arg = o.prompt_arg.clone();
+    }
+    if o.prompt_file_flag.is_some() {
+        c.prompt_file_flag = o.prompt_file_flag.clone();
+    }
+    c.extra_args.extend(o.extra_args.iter().cloned());
+    if !o.replaceable_flags.is_empty() {
+        c.replaceable_flags = o.replaceable_flags.clone();
+    }
+    for (k, v) in &o.env {
+        c.env.insert(k.clone(), v.clone());
+    }
+}
+
+/// Flow refinement over a personal definition, for an id with no built-in
+/// behind it: the flow wins per field, `extra_args` concatenate
+/// personal-then-flow, `env` merges with the flow winning per key.
+fn compose_over(flow: &HarnessOverride, personal: &HarnessOverride) -> HarnessOverride {
+    let mut env = personal.env.clone();
+    env.extend(flow.env.iter().map(|(k, v)| (k.clone(), v.clone())));
+    HarnessOverride {
+        description: flow.description.clone().or_else(|| personal.description.clone()),
+        model_notes: if flow.model_notes.is_empty() { personal.model_notes.clone() } else { flow.model_notes.clone() },
+        command: flow.command.clone().or_else(|| personal.command.clone()),
+        model_flag: flow.model_flag.clone().or_else(|| personal.model_flag.clone()),
+        cwd_flag: flow.cwd_flag.clone().or_else(|| personal.cwd_flag.clone()),
+        prompt_via: flow.prompt_via.or(personal.prompt_via),
+        prompt_arg: flow.prompt_arg.clone().or_else(|| personal.prompt_arg.clone()),
+        extra_args: personal.extra_args.iter().cloned().chain(flow.extra_args.iter().cloned()).collect(),
+        prompt_file_flag: flow.prompt_file_flag.clone().or_else(|| personal.prompt_file_flag.clone()),
+        models_cmd: if flow.models_cmd.is_empty() { personal.models_cmd.clone() } else { flow.models_cmd.clone() },
+        replaceable_flags: if flow.replaceable_flags.is_empty() { personal.replaceable_flags.clone() } else { flow.replaceable_flags.clone() },
+        env,
+    }
 }
 
 /// The command we would run for a task, split so the runner can decide how to
@@ -778,6 +902,9 @@ pub struct OpencodeEvent {
     /// Offset of the final model step within the full transcript.
     pub final_step_start: usize,
     pub step_open: bool,
+    /// Final step closed normally before OpenCode reported a cancelled input request.
+    pub stopped: bool,
+    pub late_input_error: Option<String>,
     pub error: Option<String>,
 }
 
@@ -797,16 +924,29 @@ pub fn parse_opencode_jsonl(stdout: &str) -> OpencodeEvent {
         };
         match val.get("type").and_then(|v| v.as_str()) {
             Some("step_start") => {
+                if let Some(previous) = ev.late_input_error.take() {
+                    ev.error.get_or_insert(previous);
+                }
+                ev.stopped = false;
                 ev.final_step_start = ev.agent_texts.len();
                 ev.step_open = true;
             }
-            Some("step_finish") => ev.step_open = false,
+            Some("text" | "tool_use") => ev.stopped = false,
+            Some("step_finish") => {
+                ev.stopped = ev.step_open && val.pointer("/part/reason").and_then(|v| v.as_str()) == Some("stop");
+                ev.step_open = false;
+            }
             _ => {}
         }
         if val.get("type").and_then(|v| v.as_str()) == Some("error") {
             let message = val.pointer("/error/data/message").or_else(|| val.pointer("/error/message"))
                 .or_else(|| val.pointer("/error/name"));
-            ev.error = Some(message.and_then(|v| v.as_str()).unwrap_or("OpenCode stream error").to_owned());
+            let message = message.and_then(|v| v.as_str()).unwrap_or("OpenCode stream error");
+            if ev.stopped && message.starts_with("Cancelled a request for input this run cannot answer: ") {
+                ev.late_input_error = Some(message.to_owned());
+            } else {
+                ev.error = Some(message.to_owned());
+            }
         }
         if ev.session_id.is_none() {
             // Review (minor): an OpenCode event may carry a blank `sessionID`
@@ -1409,5 +1549,89 @@ mod tests {
         let root = fixture_root("empty");
         assert_eq!(discover_under(&root), None);
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    // ---- the personal harness store (~/.zori/harnesses.yml) ----------------
+
+    fn devin_like() -> HarnessOverride {
+        HarnessOverride {
+            description: Some("Devin CLI".into()),
+            model_notes: Default::default(),
+            command: Some(vec!["devin".into()]),
+            model_flag: Some("--model".into()),
+            cwd_flag: None,
+            prompt_via: Some(PromptVia::Arg),
+            prompt_arg: Some("-p".into()),
+            extra_args: vec!["--permission-mode".into(), "accept-edits".into()],
+            prompt_file_flag: Some("--prompt-file".into()),
+            models_cmd: vec!["sh".into(), "-c".into(), "echo swe-2-high".into()],
+            replaceable_flags: vec!["--permission-mode".into()],
+            env: Default::default(),
+        }
+    }
+
+    #[test]
+    fn personal_file_parses_and_refuses_plumbing_ids() {
+        let dir = std::env::temp_dir().join(format!("zori-harness-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("harnesses.yml");
+        std::fs::write(
+            &path,
+            "devin:\n  command: [devin]\n  model_flag: \"--model\"\nprompt:\n  command: [evil]\n",
+        )
+        .unwrap();
+        let map = personal_harnesses_from(&path);
+        assert!(map.contains_key("devin"), "the real entry parses");
+        assert!(!map.contains_key("prompt"), "zori's plumbing ids are refused");
+        std::fs::write(&path, "{ not yaml").unwrap();
+        assert!(personal_harnesses_from(&path).is_empty(), "malformed file is ignored, not fatal");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn personal_store_defines_a_new_harness_end_to_end() {
+        let personal = BTreeMap::from([("devin".to_string(), devin_like())]);
+        let c = resolve_with("devin", None, &personal).unwrap();
+        assert_eq!(c.command, vec!["devin"]);
+        assert!(c.supports_model && c.model_flag.as_deref() == Some("--model"));
+        assert_eq!(c.prompt_arg.as_deref(), Some("-p"));
+        assert_eq!(c.extra_args, vec!["--permission-mode", "accept-edits"]);
+        assert!(c.is_agent);
+    }
+
+    #[test]
+    fn flow_refines_personal_and_concatenates_extra_args() {
+        let personal = BTreeMap::from([("devin".to_string(), devin_like())]);
+        let flow = HarnessOverride {
+            extra_args: vec!["--cloud".into()],
+            model_flag: Some("--model".into()), // same value, wins per field
+            ..Default::default()
+        };
+        let c = resolve_with("devin", Some(&flow), &personal).unwrap();
+        // personal first, flow appended — a flow narrows, never loses the base
+        assert_eq!(c.extra_args, vec!["--permission-mode", "accept-edits", "--cloud"]);
+        // a flow-only id with no personal entry keeps the old contract
+        let flow_only = HarnessOverride {
+            command: Some(vec!["mycli".into()]),
+            ..Default::default()
+        };
+        let c = resolve_with("mycli", Some(&flow_only), &personal).unwrap();
+        assert_eq!(c.prompt_arg.as_deref(), Some("-p"), "historical -p default preserved");
+        assert!(resolve_with("nope", None, &personal).is_err(), "unknown id still errors");
+    }
+
+    #[test]
+    fn personal_entry_refines_a_builtin() {
+        let mut ov = devin_like();
+        ov.command = Some(vec!["coddy-local".into()]);
+        let personal = BTreeMap::from([("coddy".to_string(), ov)]);
+        let c = resolve_with("coddy", None, &personal).unwrap();
+        assert_eq!(c.command, vec!["coddy-local"], "personal wins over the built-in");
+        assert_eq!(c.cwd_flag.as_deref(), Some("--cwd"), "unset fields keep the built-in's");
+        // and the flow still wins on top of the personal layer
+        let flow = HarnessOverride { command: Some(vec!["coddy-flow".into()]), ..Default::default() };
+        let c = resolve_with("coddy", Some(&flow), &personal).unwrap();
+        assert_eq!(c.command, vec!["coddy-flow"]);
     }
 }

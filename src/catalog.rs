@@ -199,9 +199,9 @@ async fn inspect(id: &str, ov: Option<&HarnessOverride>) -> Harness {
 }
 
 /// Is `program` runnable — a plain PATH search, spawning nothing. Shared with
-/// `proposal::harness_brief`, which must agree with the catalog about what
-/// "installed" means or the planner's inventory and the catalog drift apart.
-pub(crate) fn executable_found(program: &str, search_path: Option<&String>) -> bool {
+/// `proposal::harness_brief` (same "installed" verdict as the catalog) and
+/// the CLI's `zori harnesses` listing.
+pub fn executable_found(program: &str, search_path: Option<&String>) -> bool {
     fn executable(path: &Path) -> bool {
         let Ok(meta) = path.metadata() else {
             return false;

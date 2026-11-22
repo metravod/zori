@@ -19,12 +19,12 @@ tasks:
   - id: codex-review
     harness: codex
     in: "${inputs.prompt}"
-    out: "Дорожная карта разработки фичи"
+    out: "Feature development roadmap"
 
   - id: coddy-review
     harness: coddy
     in: "${inputs.prompt}"
-    out: "Дорожная карта разработки фичи"
+    out: "Feature development roadmap"
 
   - id: crosscheck
     harness: coddy
@@ -33,10 +33,10 @@ tasks:
     # its own work dir (${steps.<id>.dir}/work); if a branch wrote files (a
     # roadmap document, notes), they are there, not in the repo.
     in: |
-      Ты подводишь итог разработки дорожной карты для разработки фичи.
-      Смерджи все результаты других исследователей, забери из каждого самые сильные идеи
-      и сформируй окончательную дорожную карту. Если ветка писала файлы, они лежат
-      в её рабочем каталоге: codex — ${steps.codex-review.dir}/work, coddy —
+      You are wrapping up the roadmap development for the feature.
+      Merge the results of all the other researchers, take the strongest ideas
+      from each and form the final roadmap. If a branch wrote files, they lie
+      in its working directory: codex — ${steps.codex-review.dir}/work, coddy —
       ${steps.coddy-review.dir}/work.
 
       ## codex
@@ -45,17 +45,18 @@ tasks:
       ## coddy
       ${steps.coddy-review.output}
     out: |
-      Дорожная карта, составленная на основе собранных двумя независимыми исследователями идей.
+      A roadmap assembled from the ideas gathered by two independent researchers.
 
   - id: write-comment
     harness: codex
     depends_on: [crosscheck]
     # consume the join
     in: |
-      Тебе надо подготовить черновик сообщения для issue - подтверждение, что юзер берет этот issue
-      в работу и краткое описание того, как будет реализована эта фича
+      Prepare a draft message for the issue - a confirmation that the user is
+      taking this issue to work on and a brief description of how the feature
+      will be implemented
 
-      ## Дорожная карта
+      ## Roadmap
       ${steps.crosscheck.output}
     out: |
-      Черновик комментария к ишью на русском и английском.
+      A draft issue comment in both Russian and English.

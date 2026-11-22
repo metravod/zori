@@ -226,6 +226,11 @@ pub struct HarnessOverride {
     pub cwd_flag: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt_via: Option<PromptVia>,
+    /// When `prompt_via == arg`: the flag that precedes the prompt
+    /// (`-p`, `--prompt`…). `None` on a *user-defined* harness keeps the
+    /// historical `-p` default; a built-in keeps its own unless overridden.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_arg: Option<String>,
     /// Args appended after the harness's own flags, before the task's `args`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_args: Vec<String>,

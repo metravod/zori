@@ -43,14 +43,14 @@
   #runsel { max-width: 260px; }
   #flowsel { max-width: 240px; }
   /* A labeled dropdown pair in the header: a tiny muted caption glued to its
-     select, so "Пайплайны" (pure config templates) and "Раны" (runs with their
+     select, so "Pipelines" (pure config templates) and "Runs" (runs with their
      results + chats) read as two distinct lists sitting side by side. */
   .pick { display: inline-flex; align-items: center; gap: 6px; }
   .pick > b { font-size: 11px; font-weight: 600; color: var(--muted);
     text-transform: uppercase; letter-spacing: .5px; white-space: nowrap; }
   #rerunstale { font-size: 12px; padding: 3px 9px; }
   #rerunstale[disabled] { display: none; }   /* run actions appear only with a run attached */
-  /* ＋ Задача/Промпт — split button with a two-option menu */
+  /* ＋ Task/Prompt — split button with a two-option menu */
   #addblk { position: relative; display: flex; }
   #addblk-main { border-top-right-radius: 0; border-bottom-right-radius: 0; }
   #addblk-caret { border-top-left-radius: 0; border-bottom-left-radius: 0; margin-left: -1px; padding: 6px 7px; }
@@ -133,7 +133,6 @@
   .bnode .bn-id { font-weight: 600; font-size: 13px; }
   .bnode .bn-sub { color: var(--muted); font-size: 11.5px; margin-top: 3px; }
   .bnode .bn-in { color: var(--muted); font-size: 11px; margin-top: 4px; max-height: 30px; overflow: hidden; white-space: pre-wrap; word-break: break-word; opacity: .85; }
-  .bnode .bn-chat { position: absolute; bottom: 6px; right: 8px; font-size: 11px; line-height: 1; opacity: .8; pointer-events: none; }
   /* Round action buttons on each block: ✕ deletes (top-right corner), ＋ grows
      a dependent block (right edge), ⧉ duplicates (bottom center). They sit on
      the border so they never cover the block's text, and only show on
@@ -177,8 +176,8 @@
   .tclose { padding: 2px 10px; font-size: 13px; color: var(--muted); }
   .bstatus { padding: 8px 14px; border-bottom: 1px solid var(--line); font-size: 12.5px; min-height: 33px; flex: 0 0 auto; }
   .ipane { flex: 1 1 auto; min-height: 0; }
-  /* collapsible config: название / harness / модель / зависимости (чекбоксы) /
-     директория — без шаблонов */
+  /* collapsible config: name / harness / model / dependencies (checkboxes) /
+     directory — no templates */
   #icfg { flex: 0 0 auto; max-height: 56%; overflow: auto; border-bottom: 1px solid var(--line); padding: 4px 14px 12px; }
   #icfg.hidden { display: none; }
   #icfg label { display: block; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .5px; margin-bottom: 3px; }
@@ -218,8 +217,8 @@
 
   /* ---- chat = ONE console -------------------------------------------------
      The whole panel below the config strip is a single terminal (owner's ask:
-     «вся панель — один единый чат, без доп границ, в стиле консоли, на всю
-     ширину, сообщения юзера подсвечены, вместо поля ввода — значок»).
+     "the whole panel is one continuous chat, no extra borders, console style, full
+     width, user messages highlighted, an icon in place of an input field").
      Messages are full-width flat lines, monospace; user lines carry the
      accent tint; the input is a bare ❯ mark in the gutter, no box. */
   #pane-chat { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden;
@@ -273,7 +272,7 @@
   .mdrop .mo .dflt { color: var(--muted); font-family: ui-sans-serif, system-ui, sans-serif; font-size: 10.5px; margin-left: 7px; }
   .mdrop .none { padding: 6px 9px; color: var(--muted); font-size: 12px; }
 
-  /* Чат pane — one console (styles live in the console block above); the
+  /* Chat pane — one console (styles live in the console block above); the
      composer is the input line: ❯ + borderless auto-growing textarea */
   .composer { flex: 0 0 auto; border-top: 1px solid var(--line); }
   .composer.hidden { display: none; }
@@ -328,8 +327,6 @@
   .turn .md hr { border: 0; border-top: 1px solid var(--line); margin: 8px 0; }
   #tm-md { font-size: 11px; padding: 3px 7px; }
   #tm-md[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
-  #chat-empty { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; text-align: center; padding: 24px; color: var(--muted); font-size: 12.5px; }
-  #chat-empty.hidden { display: none; }
   #tm-questions { flex: 0 0 auto; }
   #inbox { position:relative; color:var(--waiting); }
   #inbox summary { cursor:pointer; }
@@ -369,7 +366,24 @@
   .chat-top h3 { margin:0; font-size:16px; }
   .chat-choices button,#chat-models button { display:block; width:100%; margin-top:5px; padding:9px 12px; text-align:left; }
   #chat-models summary { cursor:pointer; padding:10px 4px; }
-  #inspector.model-chat :is(#icfg-toggle,#iyaml,#icfg,#bstatus,#tm-rerun) { display:none; }
+  /* the Fleet picker: same shape as the chat dialog, but Enter toggles a pick
+     instead of committing one — the dialog stays open until Save or Esc */
+  #fleet-dialog[open] { width:min(560px,90vw); max-height:84vh; display:flex; flex-direction:column; gap:8px; color:var(--fg); background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px; }
+  #fleet-dialog::backdrop { background:rgba(3,6,12,.65); }
+  #fleet-dialog .fleet-head { display:flex; align-items:center; gap:10px; }
+  #fleet-dialog .fleet-head strong { margin:0; font-size:16px; }
+  #fleet-dialog .fleet-head .tclose { margin-left:auto; }
+  #fleet-sub { color:var(--muted); font-size:12px; }
+  #fleet-error { white-space:pre-wrap; overflow-wrap:anywhere; font-size:12px; margin:0; color:#e5484d; }
+  #fleet-groups { overflow:auto; min-height:120px; }
+  #fleet-groups summary { cursor:pointer; padding:10px 4px; display:flex; justify-content:space-between; align-items:baseline; }
+  #fleet-groups summary .fnote { color:var(--muted); font-size:11px; }
+  #fleet-groups button { display:block; width:100%; margin-top:5px; padding:9px 12px; text-align:left; }
+  #fleet-groups button.picked { border-color:var(--done); color:var(--done); }
+  #fleet-groups button.saved-only { font-style:italic; }
+  .fleet-foot { display:flex; align-items:center; gap:10px; margin-top:2px; }
+  .fleet-foot #fleet-count { color:var(--muted); font-size:12px; }
+  #inspector.model-chat :is(#icfg-toggle,#icfg,#bstatus,#tm-rerun,#ins-close) { display:none; }
   #model-chat-heading { flex:1; padding:5px 10px; font-size:13px; }
   #chat-error { white-space:pre-wrap; overflow-wrap:anywhere; font-size:12px; margin:6px 0; color:var(--muted); }
 </style>
@@ -381,41 +395,42 @@
     <span class="cur" aria-hidden="true"></span>
   </h1>
   <!-- Two distinct lists, side by side (owner's ask: split runs from
-       pipelines). «Пайплайны» = pure config templates saved to the flows dir —
-       open one to edit/rerun it, no results attached. «Раны» = actual launches
+       pipelines). "Pipelines" = pure config templates saved to the flows dir —
+       open one to edit/rerun it, no results attached. "Runs" = actual launches
        with their results and chats — attach the canvas to one to watch it live.
        The old single mix-selector (runs + chats crammed together) is gone; the
        flows list that used to hide inside the YAML pop-up lives here now. -->
-  <span class="pick" title="Пайплайн — сохранённый шаблон-конфиг без результатов. Открой, чтобы редактировать и запустить.">
-    <b>Пайплайны</b>
-    <select id="flowsel"><option value="">— выбрать пайплайн —</option></select>
+  <span class="pick" title="A pipeline is a saved config template without results. Open one to edit and run it.">
+    <b>Pipelines</b>
+    <select id="flowsel"><option value="">— select a pipeline —</option></select>
   </span>
-  <span class="pick" title="Ран — запуск пайплайна с его результатами и чатами. Прикрепи канву, чтобы смотреть живьём.">
-    <b>Раны</b>
-    <select id="runsel" title="Прикрепить канву к рану (его флоу загрузится сюда, блоки покажут живой статус)"></select>
+  <span class="pick" title="A run is a launched pipeline with its results and chats. Attach a canvas to watch it live.">
+    <b>Runs</b>
+    <select id="runsel" title="Attach the canvas to a run (its flow loads here, blocks show live status)"></select>
   </span>
   <span id="runstatus" class="pill">— editing —</span>
   <details id="inbox" hidden><summary aria-live="polite"></summary><div id="inbox-cards"></div></details>
   <div class="spacer"></div>
+  <button id="b-fleet" title="Your model fleet — pick the models you actually run. Enter toggles a pick, Save persists to ~/.zori/fleet.json; the planner proposes models from this fleet">⚓ Fleet<span id="fleet-n"></span></button>
   <button id="rerunstale" title="Re-run every stale node of the attached run" disabled>⟳ Rerun stale</button>
 </header>
 <!-- the current-pipeline strip (the editor's own row, under the logo bar):
      name + cwd, ＋ block, Save/Run. Run-attach controls (selector, status
      pill, rerun-stale) moved up next to the logo — functionality unchanged -->
 <div id="runbar">
-  <input id="bf-name" placeholder="название" spellcheck="false" title="Название флоу">
-  <input id="bf-cwd" placeholder="директория запуска" spellcheck="false" title="Дефолтная директория для запуска (cwd)">
+  <input id="bf-name" placeholder="name" spellcheck="false" title="Flow name">
+  <input id="bf-cwd" placeholder="launch directory" spellcheck="false" title="Default launch directory (cwd)">
   <div id="addblk">
-    <button id="addblk-main" title="Добавить блок выбранного типа">＋ Задача</button>
-    <button id="addblk-caret" title="Тип блока: Задача или Промпт">▾</button>
+    <button id="addblk-main" title="Add a block of the selected type">＋ Task</button>
+    <button id="addblk-caret" title="Block type: Task or Prompt">▾</button>
     <div id="addblk-menu" class="hidden">
-      <button data-kind="task"><b>Задача</b><span>блок с агентом — coddy, codex, opencode…</span></button>
-      <button data-kind="prompt"><b>Промпт</b><span>стартовый текст без процесса (harness prompt)</span></button>
+      <button data-kind="task"><b>Task</b><span>an agent block — coddy, codex, opencode…</span></button>
+      <button data-kind="prompt"><b>Prompt</b><span>starting text with no process (harness prompt)</span></button>
     </div>
   </div>
   <div class="spacer"></div>
-  <button id="b-save" title="Сохранить конфиг как чистый шаблон-пайплайн (в flows-директорию, без запуска)">⤓ Шаблон</button>
-  <button id="b-run" title="Сохранить и запустить сейчас" style="border-color:var(--done);color:var(--done)">▶ Run</button>
+  <button id="b-save" title="Save the config as a pure pipeline template (to the flows dir, no launch)">⤓ Template</button>
+  <button id="b-run" title="Save and run now" style="border-color:var(--done);color:var(--done)">▶ Run</button>
 </div>
 <main>
   <section id="build">
@@ -423,102 +438,120 @@
       <div id="bcanvas-wrap">
         <div id="bcanvas"><svg id="bedges"></svg></div>
         <div id="zoomer">
-          <button id="zoom-out" title="Уменьшить (колесо мыши тоже зумит)">−</button>
+          <button id="zoom-out" title="Zoom out (mouse wheel zooms too)">−</button>
           <span id="zoom-lvl">100%</span>
-          <button id="zoom-in" title="Увеличить (колесо мыши тоже зумит)">+</button>
-          <button id="zoom-fit" title="Вписать граф в экран">⤢</button>
+          <button id="zoom-in" title="Zoom in (mouse wheel zooms too)">+</button>
+          <button id="zoom-fit" title="Fit graph to screen">⤢</button>
         </div>
       </div>
       <aside id="inspector">
-        <div id="ins-handle" title="Потянуть, чтобы изменить ширину панели"></div>
+        <div id="ins-handle" title="Pull to resize the panel"></div>
         <div class="ihead">
-          <strong id="model-chat-heading" hidden>Чат с моделью</strong>
-          <button id="icfg-toggle" title="Настройки блока: название, harness, модель, зависимости, директория"><span class="arr" id="icfg-arrow">▸</span> <span id="icfg-sum">конфиг блока</span></button>
-          <button id="iyaml" title="Уровни и YAML флоу">YAML</button>
-          <button class="tclose" id="ins-close" title="Снять выделение (Esc)">✕</button>
+          <strong id="model-chat-heading" hidden>Chat with the supermodel</strong>
+          <button id="icfg-toggle" title="Block settings: name, harness, model, dependencies, directory"><span class="arr" id="icfg-arrow">▸</span> <span id="icfg-sum">block config</span></button>
+          <button id="iyaml" title="Levels and flow YAML">YAML</button>
+          <button class="tclose" id="ins-close" title="Deselect (Esc)">✕</button>
         </div>
         <div class="bstatus" id="bstatus"></div>
 
-        <!-- сворачиваемый конфиг блока: только название / harness / модель /
-             зависимости-чекбоксы / директория; без шаблонов -->
+        <!-- collapsible block config: name / harness / model /
+             dependency checkboxes / directory only; no templates -->
         <div class="icfg hidden" id="icfg">
           <div class="mrow">
-            <div><label>Название</label><input id="tm-id" placeholder="unique id" spellcheck="false"></div>
+            <div><label>Name</label><input id="tm-id" placeholder="unique id" spellcheck="false"></div>
             <div><label>Harness</label><select id="tm-harness"></select></div>
           </div>
           <div class="mrow full">
             <div id="tm-model-wrap"><label>Model</label>
               <div id="tm-model-row">
                 <input id="tm-model" placeholder="optional" spellcheck="false" autocomplete="off" style="flex:1;min-width:0">
-                <button id="tm-model-refresh" title="Обновить список моделей из CLI" style="padding:2px 8px">↻</button>
+                <button id="tm-model-refresh" title="Refresh the model list from the CLI" style="padding:2px 8px">↻</button>
                 <div id="tm-model-drop" class="mdrop hidden"></div>
               </div>
               <div id="tm-model-hint" style="font-size:11px;color:var(--muted);margin-top:3px;min-height:14px"></div>
             </div>
           </div>
           <div class="mrow full">
-            <div><label>Директория задачи</label>
-              <input id="tm-cwd" placeholder="/абсолютный/путь или от cwd zori" spellcheck="false" title="Своя рабочая директория для этой задачи; перекрывает flow cwd и workspace">
-              <div style="font-size:11px;color:var(--muted);margin-top:3px">пусто = изолированная tasks/&lt;id&gt;/work под раном</div>
+            <div><label>Task directory</label>
+              <input id="tm-cwd" placeholder="/absolute path or relative to zori's cwd" spellcheck="false" title="Its own working directory for this task; overrides flow cwd and workspace">
+              <div style="font-size:11px;color:var(--muted);margin-top:3px">empty = isolated tasks/&lt;id&gt;/work under the run</div>
             </div>
           </div>
           <details id="pc-out" class="cfgout">
-            <summary>Out — что должно получиться (добавляется к промпту)</summary>
-            <textarea id="tm-out" placeholder="что агент должен вернуть"></textarea>
+            <summary>Out — what the result should be (appended to the prompt)</summary>
+            <textarea id="tm-out" placeholder="what the agent should return"></textarea>
           </details>
-          <div class="deps"><label style="width:100%">Зависимости</label><div class="depbox" id="tm-deps"></div></div>
-          <div class="deps"><label style="width:100%">Скиллы <span style="font-weight:normal;color:var(--muted)">— готовые фрагменты промпта из хранилища</span></label><div class="depbox" id="tm-skills"></div></div>
-          <label class="opt"><input id="tm-optional" type="checkbox"> optional — сбой здесь не блокирует задачи ниже по графу</label>
+          <div class="deps"><label style="width:100%">Dependencies</label><div class="depbox" id="tm-deps"></div></div>
+          <div class="deps"><label style="width:100%">Skills <span style="font-weight:normal;color:var(--muted)">— ready-made prompt fragments from the library</span></label><div class="depbox" id="tm-skills"></div></div>
+          <label class="opt"><input id="tm-optional" type="checkbox"> optional — a failure here doesn't block tasks downstream in the graph</label>
           <div class="pfoot">
             <button id="tm-del" style="color:var(--failed);border-color:var(--failed)">Delete</button>
             <span class="err" id="tm-cfg-hint" style="flex:1"></span>
           </div>
         </div>
 
-        <!-- Чат-панель = ОДНА консоль: сообщения на всю ширину одним потоком,
-             ввод — строка с ❯ (до рана это стартовый промпт, после — steer) -->
+        <!-- Chat panel = ONE console: full-width messages in a single stream,
+             input is a line with ❯ (before the run it is the start prompt, after it — steer) -->
         <div class="ipane" id="pane-chat">
           <div class="cstream" id="cstream">
             <div class="cline head hidden" id="run-head"><span class="dot" id="tm-run-dot"></span><span id="tm-run-status"></span></div>
-            <div class="cline user hidden" id="start-line" title="Нажми — отредактировать стартовый промпт"></div>
+            <div class="cline user hidden" id="start-line" title="Click to edit the start prompt"></div>
             <div class="turns" id="tm-turns"></div>
             <div id="tm-questions"></div>
             <div id="tm-proposal"></div>
             <div id="chat-note" class="chat-note hidden"></div>
-            <div id="chat-empty">кликни блок на канве — его чат появится здесь</div>
           </div>
           <div class="composer hidden" id="composer">
             <div class="cin" id="cin">
               <span class="cmark">❯</span>
-              <!-- активное поле приезжает сюда из renderRunSection:
-                   #tm-in (стартовый промпт, рана нет) или #tm-msg (steer) -->
+              <textarea id="planner-msg" class="hidden" rows="1" aria-label="Message to the supermodel" placeholder="Message the supermodel…"></textarea>
+              <!-- the active field arrives here from renderRunSection:
+                   #tm-in (start prompt, no run) or #tm-msg (steer) -->
             </div>
             <div class="cacts" id="cacts">
               <span class="hint" id="tm-run-hint"></span>
-              <button id="tm-md" aria-pressed="true" title="Рендерить Markdown в ответах агента">MD</button>
-              <button id="tm-rerun" title="Перезапустить узел с текущими правками конфига/промпта">⟳ Rerun</button>
+              <button id="tm-md" aria-pressed="true" title="Render Markdown in agent replies">MD</button>
+              <button id="tm-rerun" title="Rerun the node with the current config/prompt edits">⟳ Rerun</button>
               <button id="tm-send">✉ Send &amp; steer</button>
             </div>
           </div>
-          <!-- поля-кочевники: JS ставит их то в композер, то в строку старта -->
-          <textarea id="tm-in" class="hidden" rows="1" placeholder="стартовый промпт — что должен сделать агент; работают ${'$'}{steps.<id>.output} и ${'$'}{inputs.key}"></textarea>
-          <textarea id="tm-msg" class="hidden" rows="1" placeholder="уточнение агенту — Enter отправить, Shift+Enter — новая строка"></textarea>
+          <!-- nomadic fields: JS moves them between the composer and the start line -->
+          <textarea id="tm-in" class="hidden" rows="1" placeholder="start prompt — what the agent should do; ${'$'}{steps.<id>.output} and ${'$'}{inputs.key} work"></textarea>
+          <textarea id="tm-msg" class="hidden" rows="1" placeholder="a note to the agent — Enter to send, Shift+Enter for a new line"></textarea>
         </div>
       </aside>
     </div>
   </section>
 
   <dialog id="chat-dialog" aria-labelledby="chat-title">
-    <div class="chat-top"><h3 id="chat-title"></h3><button id="chat-close" aria-label="Закрыть">✕</button></div>
+    <div class="chat-top"><h3 id="chat-title"></h3><button id="chat-close" aria-label="Close">✕</button></div>
     <div data-stage="mode" class="chat-choices">
-      <button id="choose-prompt">Стартовый промпт для следующих задач</button>
-      <button id="choose-chat">Чат с моделью</button>
-      <label title="Цепляет два встроенных скилла: zori-config (модель знает схему flow и вернёт валидный YAML-пайплайн) и zori-planner (дисциплина propose→confirm→run: только предлагает, не сохраняет и не запускает)" style="display:block;margin-top:10px;padding:2px 12px;font-size:12px;color:var(--muted);text-align:left">
-        <input type="checkbox" id="chat-planner" checked> Скиллы планировщика — схема zori + дисциплина propose→run (модель соберёт YAML и не запустит его сама)
-      </label>
+      <button id="choose-prompt">Start prompt for the next tasks</button>
+      <button id="choose-chat">Chat with the model</button>
     </div>
+    <label title="Hooks two built-in skills: zori-config (the model knows the flow schema and returns a valid YAML pipeline) and zori-planner (propose→confirm→run discipline: it only proposes — never saves or launches)" style="display:block;margin-top:10px;padding:2px 12px;font-size:12px;color:var(--muted);text-align:left">
+      <input type="checkbox" id="chat-planner" checked> Planner skills — zori schema + propose→run discipline (the model builds the YAML and never launches it itself)
+    </label>
     <div data-stage="models" id="chat-models" hidden></div>
     <div id="chat-error" role="status"></div>
+  </dialog>
+
+  <!-- The model fleet: multi-select across harnesses, saved to ~/.zori/fleet.json.
+       Unlike the chat picker (Enter = pick one and go), Enter here toggles a
+       pick and the dialog stays open; the planner brief prefers these models. -->
+  <dialog id="fleet-dialog" aria-labelledby="fleet-title">
+    <div class="fleet-head">
+      <strong id="fleet-title">Model fleet</strong>
+      <button class="tclose" id="fleet-close" aria-label="Close" title="Close (Esc) — unsaved toggles are lost">✕</button>
+    </div>
+    <div id="fleet-sub">Pick the models you actually run — expand a harness, <b>Enter toggles</b> a model, <b>Save</b> persists. Planner chats then propose <code>model:</code> from this fleet (task models stay free to type).</div>
+    <div id="fleet-error" role="status"></div>
+    <div id="fleet-groups"></div>
+    <div class="fleet-foot">
+      <span id="fleet-count">0 picked</span>
+      <div class="spacer"></div>
+      <button id="fleet-save">Save</button>
+    </div>
   </dialog>
 
   <!-- Flow inputs pop-up -->
@@ -534,15 +567,15 @@
     </div>
   </div>
 
-  <!-- YAML pop-up: уровни выполнения + YAML, который будет записан.
-       Здесь же вторичные операции флоу (открыть/новый/inputs) — шапка минимальна -->
+  <!-- YAML pop-up: execution levels + the YAML that will be written.
+       Secondary flow operations (open/new/inputs) live here too — the header stays minimal -->
   <div id="yamlmodal" class="modal hidden">
     <div class="mbox" style="width:680px">
       <h3>YAML</h3>
       <div class="ftools">
-        <select id="b-open" title="Открыть сохранённый флоу"><option value="">открыть…</option></select>
-        <button id="b-new" title="Начать с пустого флоу">Новый</button>
-        <button id="b-inputs" title="Inputs флоу — подстановки в промптах">Inputs</button>
+        <select id="b-open" title="Open a saved flow"><option value="">open…</option></select>
+        <button id="b-new" title="Start from an empty flow">New</button>
+        <button id="b-inputs" title="Flow inputs — substitutions in prompts">Inputs</button>
       </div>
       <div class="lvlchips" id="blevels"></div>
       <pre id="byaml">—</pre>
@@ -559,7 +592,7 @@ const $ = (s) => document.querySelector(s);
 const COL_W = 250, PAD = 30, GAP = 24;
 const state = { runs: [], runId: null, snap: null, es: null };
 const chat = { run: null, events: null, node: null, connected: false, error: '', sending: false,
-  request: 0, busy: false, blockDraft: '', drafts: new Map(),
+  request: 0, busy: false, drafts: new Map(),
   // canvasBase: fallback merge base (the board at send time) for proposals
   // stored by older builds — new proposals carry their own base (p.base);
   // mergedHash: the proposal hash already laid on the canvas, so an SSE tick
@@ -585,7 +618,7 @@ const post = (path, obj) => api(path, {
 //
 // Attaching a run (picking it in the header or ▶ Run) loads
 // that run's flow ONTO this canvas and paints its live status on the blocks:
-// a status dot, a per-block progress line, and — on the inspector's Чат tab
+// a status dot, a per-block progress line, and — on the inspector's Chat tab
 // of the selected block — the dialogue with steer/rerun. Editing is always
 // available; the overlay simply disappears when no run is attached, or for
 // blocks whose id the run does not know.
@@ -603,13 +636,13 @@ async function loadRuns(keepSel) {
   for (const r of state.runs) {
     const o = document.createElement('option');
     o.value = r.run_id;
-    o.textContent = r.chat_title != null ? `Чат · ${r.chat_title}` : `${r.flow_name} · ${r.status} (${r.nodes})`;
+    o.textContent = r.chat_title != null ? `Chat · ${r.chat_title}` : `${r.flow_name} · ${r.status} (${r.nodes})`;
     sel.appendChild(o);
   }
   const alive = state.runId && state.runs.some(r => r.run_id === state.runId);
   sel.value = (keepSel && alive) ? state.runId : '';
   if (!alive) clearRun();
-  if (chat.run) sel.value = chat.run;
+  if (!state.runId && chat.run) sel.value = chat.run;
 }
 
 function clearRun() {
@@ -622,12 +655,16 @@ function clearRun() {
   renderRunSection();
 }
 
-async function selectRun(id) {
-  if (!id) { leaveChat(); clearRun(); return; }
+async function selectRun(id, planner = null) {
+  if (!id) { leaveChat(); clearRun(); deselect(); return; }
   if (state.runs.some(r => r.run_id === id && r.chat_title != null)) {
+    if (state.runId && chat.run !== id) detachFromRun();
     openChat(id); return;
   }
-  leaveChat();
+  planner ||= sessionStorage.getItem('zori-planner:' + id)
+    || state.runs.find(r => r.launched_run === id)?.run_id;
+  if (chat.run !== planner) leaveChat();
+  deselect();
   if (state.es) state.es.close();
   sessionStorage.setItem('zori-attached-run', id);
   state.runId = id;
@@ -638,6 +675,10 @@ async function selectRun(id) {
     await loadRunFlow(snap);    // lays the run's flow out on this canvas
   } catch (e) { note('run load failed: ' + e.message); }
   if (state.runId !== id) return;
+  planner ||= spec.current.tasks.find(t => t.chat)?.chat;
+  if (planner && planner !== chat.run && state.runs.some(r => r.run_id === planner)) openChat(planner);
+  if (planner) sessionStorage.setItem('zori-planner:' + id, planner);
+  $('#runsel').value = id;
   updatePill();
   overlayRun();
   renderRunSection();
@@ -678,7 +719,7 @@ async function loadRunFlow(snap) {
     };
     // Fallback topology only — its empty prompts must never ride on a rerun.
     spec.fromRunFile = false;
-    note('файл flow не открылся — показаны узлы из рана');
+    note('flow file didn\'t open — showing nodes from the run');
   }
   spec.levels = snap.levels || null;
   spec.error = null; spec.yaml = ''; spec.warnings = [];
@@ -730,11 +771,11 @@ function questionCards(box, nodes, currentRun = () => state.runId) {
     const form = document.createElement('form');
     form.className = 'question'; form.dataset.key = key;
     const label = document.createElement('small');
-    label.textContent = n.id + (q.inline ? ' · вопрос по ходу работы' : ' · вопрос оператора');
+    label.textContent = n.id + (q.inline ? ' · question during work' : ' · operator question');
     const title = document.createElement('strong'); title.textContent = q.text;
     form.append(label, title);
     const input = document.createElement('input');
-    input.placeholder = 'Свой ответ'; input.setAttribute('aria-label', q.text);
+    input.placeholder = 'Your answer'; input.setAttribute('aria-label', q.text);
     const feedback = document.createElement('div');
     feedback.setAttribute('role', 'status');
     async function send(text) {
@@ -747,13 +788,13 @@ function questionCards(box, nodes, currentRun = () => state.runId) {
         // the agent was asking its question still reaches the next proposal.
         // Only the chat node carries it; other nodes' answers stay byte-for-byte.
         const body = { node: n.id, question_id: q.id, text };
-        if (n.id === 'chat') {
+        if (!editTask && run === chat.run) {
           const graph = specForServer();
           chat.canvasBase = JSON.parse(JSON.stringify(graph));
           body.graph = graph;
         }
         await post('/api/runs/' + encodeURIComponent(run) + '/answer', body);
-        feedback.textContent = 'Ответ принят';
+        feedback.textContent = 'Answer accepted';
       } catch (e) {
         delete form.dataset.sending;
         feedback.textContent = e.message;
@@ -765,7 +806,7 @@ function questionCards(box, nodes, currentRun = () => state.runId) {
       button.onclick = () => send(choice); form.append(button);
     }
     const submit = document.createElement('button');
-    submit.type = 'submit'; submit.textContent = 'Ответить';
+    submit.type = 'submit'; submit.textContent = 'Answer';
     form.append(input, submit, feedback);
     form.onsubmit = e => { e.preventDefault(); send(input.value.trim()); };
     box.append(form);
@@ -812,7 +853,7 @@ function buildProposalCard(card, p, n, run) {
   card.textContent = '';
   const head = document.createElement('div'); head.className = 'p-head';
   const title = document.createElement('span'); title.className = 'p-title';
-  title.textContent = 'Предложение пайплайна';
+  title.textContent = 'Pipeline proposal';
   const badge = document.createElement('span'); badge.className = 'p-badge';
   head.append(title, badge);
   card.append(head);
@@ -826,12 +867,12 @@ function buildProposalCard(card, p, n, run) {
   }
   if (p.warnings && p.warnings.length) {
     const w = document.createElement('div'); w.className = 'p-warn';
-    w.textContent = 'нужны значения при запуске: ' + p.warnings.join(', ');
+    w.textContent = 'values needed at launch: ' + p.warnings.join(', ');
     card.append(w);
   }
   if (p.levels && p.levels.length) {
     const lv = document.createElement('div'); lv.className = 'p-lv';
-    lv.textContent = 'уровни: ' + p.levels.map(l => l.join(' + ')).join(' → ');
+    lv.textContent = 'levels: ' + p.levels.map(l => l.join(' + ')).join(' → ');
     card.append(lv);
   }
   const actions = document.createElement('div'); actions.className = 'p-actions';
@@ -847,7 +888,7 @@ function paintProposal(card, p, n, run) {
   actions.textContent = '';
   const st = p.status || 'proposed';
   if (st === 'proposed' && p.valid) {
-    card.classList.add('ok'); badge.textContent = 'готов к запуску';
+    card.classList.add('ok'); badge.textContent = 'ready to run';
     // One small input per ${inputs.k} key the graph reads but doesn't declare
     // (the server's warning list), so the operator can supply them at click.
     const fields = {};
@@ -858,13 +899,13 @@ function paintProposal(card, p, n, run) {
       actions.append(small, inp); fields[k] = inp;
     }
     const runBtn = document.createElement('button');
-    runBtn.type = 'button'; runBtn.textContent = '▶ Запустить';
+    runBtn.type = 'button'; runBtn.textContent = '▶ Run';
     const note = document.createElement('span'); note.className = 'p-note'; note.setAttribute('role', 'status');
     runBtn.onclick = async () => {
       if (card.dataset.sending) return;
       const inputs = {};
       for (const k in fields) { const v = fields[k].value.trim(); if (v) inputs[k] = v; }
-      card.dataset.sending = '1'; runBtn.disabled = true; note.textContent = 'запускаю…';
+      card.dataset.sending = '1'; runBtn.disabled = true; note.textContent = 'launching…';
       try {
         // Launch the board in front of the operator, not the YAML the agent
         // first wrote: they may have dragged a node, switched a model or wired
@@ -876,8 +917,8 @@ function paintProposal(card, p, n, run) {
         note.textContent = '';
         if (res && res.run_id) {
           const link = document.createElement('button');
-          link.type = 'button'; link.textContent = 'открыть ран →';
-          link.onclick = () => selectRun(res.run_id);
+          link.type = 'button'; link.textContent = 'open run →';
+          link.onclick = () => selectRun(res.run_id, run);
           actions.append(link);
         }
       } catch (e) {
@@ -885,7 +926,7 @@ function paintProposal(card, p, n, run) {
       }
     };
     const rej = document.createElement('button');
-    rej.type = 'button'; rej.textContent = 'Отклонить';
+    rej.type = 'button'; rej.textContent = 'Reject';
     rej.onclick = async () => {
       if (card.dataset.sending) return;
       card.dataset.sending = '1';
@@ -894,20 +935,20 @@ function paintProposal(card, p, n, run) {
     };
     actions.append(runBtn, rej, note);
   } else if (st === 'proposed') {
-    card.classList.add('bad'); badge.textContent = 'не прошло проверку';
+    card.classList.add('bad'); badge.textContent = 'failed validation';
     const note = document.createElement('span'); note.className = 'p-note';
-    note.textContent = 'zori просит модель исправить';
+    note.textContent = 'zori asks the model to fix it';
     actions.append(note);
   } else if (st === 'launched') {
-    card.classList.add('done'); badge.textContent = 'запущено';
+    card.classList.add('done'); badge.textContent = 'launched';
     if (p.run_id) {
       const link = document.createElement('button');
-      link.type = 'button'; link.textContent = 'открыть ран →';
-      link.onclick = () => selectRun(p.run_id);
+      link.type = 'button'; link.textContent = 'open run →';
+      link.onclick = () => selectRun(p.run_id, run);
       actions.append(link);
     }
   } else { // rejected
-    card.classList.add('rejected'); badge.textContent = 'отклонено';
+    card.classList.add('rejected'); badge.textContent = 'rejected';
   }
 }
 
@@ -917,7 +958,7 @@ function updatePill() {
   const waiting = nodes.reduce((sum, n) => sum + (n.questions || []).filter(q => !q.closed && q.answer == null).length, 0);
   questionCards($('#inbox-cards'), nodes);
   $('#inbox').hidden = waiting === 0;
-  $('#inbox summary').textContent = 'Вопросы · ' + waiting;
+  $('#inbox summary').textContent = 'Questions · ' + waiting;
   if (!state.snap) { rs.textContent = '— editing —'; rs.style.color = 'var(--muted)'; }
   else {
     rs.textContent = state.snap.status;
@@ -971,18 +1012,19 @@ function renderRunSection() {
   // composer (#tm-msg). The two textareas are nomads: renderRunSection moves
   // them between the composer slot and the start line; their listeners and
   // values live on the elements, so nothing is lost in the move.
-  const empty = $('#chat-empty'), noteEl = $('#chat-note');
+  const noteEl = $('#chat-note');
   const head = $('#run-head'), startLine = $('#start-line');
   const composer = $('#composer'), cin = $('#cin'), cacts = $('#cacts');
-  const tin = $('#tm-in'), tmsg = $('#tm-msg');
+  const inChat = !editTask;
+  const tin = $('#tm-in'), tmsg = inChat ? $('#planner-msg') : $('#tm-msg');
+  $('#planner-msg').classList.toggle('hidden', !inChat);
+  if (inChat) $('#tm-msg').classList.add('hidden');
   const stream = $('#cstream');
-  const inChat = !!chat.run;
   $('#inspector').classList.toggle('model-chat', inChat);
   $('#model-chat-heading').hidden = !inChat;
-  $('#ins-close').title = inChat ? 'Вернуться к графу (Esc)' : 'Снять выделение (Esc)';
   const n = inChat ? chat.node : state.snap?.nodes?.[editTask?.id?.trim()];
-  questionCards($('#tm-questions'), n ? [n] : [], () => chat.run || state.runId);
-  proposalCards($('#tm-proposal'), n ? [n] : [], () => chat.run || state.runId);
+  questionCards($('#tm-questions'), n ? [n] : [], () => !editTask ? chat.run : state.runId);
+  proposalCards($('#tm-proposal'), n ? [n] : [], () => !editTask ? chat.run : state.runId);
   if (!n) $('#tm-turns').replaceChildren();
   noteEl.classList.add('hidden');
   head.classList.add('hidden');
@@ -990,17 +1032,18 @@ function renderRunSection() {
   // textarea through SSE re-renders (only its own blur/Esc re-renders it away).
   const editingStart = startLine.contains(tin);
   if (!editingStart) startLine.classList.add('hidden');
-  if (!editTask && !inChat) {
-    empty.classList.remove('hidden');
-    empty.textContent = 'кликни блок на канве — его чат появится здесь';
-    composer.classList.add('hidden');
-    $('#icfg-sum').textContent = 'конфиг блока';
-    $('#icfg-toggle').disabled = true;
+  $('#icfg-toggle').disabled = inChat;
+  composer.classList.remove('hidden');
+  if (inChat && !n) {
+    tin.classList.add('hidden');
+    cacts.classList.remove('hidden');
+    tmsg.disabled = false;
+    tmsg.placeholder = 'Message the supermodel…';
+    $('#tm-send').textContent = 'Send';
+    $('#tm-send').disabled = false;
+    $('#tm-run-hint').textContent = '';
     return;
   }
-  $('#icfg-toggle').disabled = false;
-  empty.classList.add('hidden');
-  composer.classList.remove('hidden');
   if (!n) {
     // Authoring: nothing to talk to yet — the console input is the start
     // prompt itself; the stream carries only the note about why.
@@ -1011,8 +1054,8 @@ function renderRunSection() {
     autogrow(tin, 220);
     noteEl.classList.remove('hidden');
     noteEl.textContent = state.snap
-      ? 'в прикреплённом ране нет узла «' + ((editTask.id || '').trim() || 'без id') + '» — чат доступен для блоков этого рана'
-      : 'Enter — выбрать стартовый промпт или чат · Shift+Enter — новая строка';
+      ? 'the attached run has no node "' + ((editTask.id || '').trim() || 'no id') + '" — chat is available for blocks of this run'
+      : 'Enter — pick the start prompt or chat · Shift+Enter — new line';
     return;
   }
   // Live chat: input = steer/answer composer.
@@ -1033,7 +1076,7 @@ function renderRunSection() {
     const mark = document.createElement('span'); mark.className = 'cmark'; mark.textContent = '❯';
     const body = document.createElement('div'); body.className = 'cbody';
     const txt = (editTask.in || '').trim();
-    body.textContent = txt || 'стартовый промпт пуст — нажми, чтобы задать';
+    body.textContent = txt || 'start prompt is empty — click to set it';
     if (!txt) body.classList.add('dim');
     startLine.append(mark, body);
     startLine.classList.remove('hidden');
@@ -1045,7 +1088,7 @@ function renderRunSection() {
   const turnsBox = $('#tm-turns');
   turnsBox.innerHTML = '';
   const turns = n.turns || [];
-  if (!turns.length) turnsBox.innerHTML = '<div class="hint" style="padding:2px 0 2px 42px">диалога пока нет</div>';
+  if (!turns.length) turnsBox.innerHTML = '<div class="hint" style="padding:2px 0 2px 42px">no dialogue yet</div>';
   for (const t of turns) {
     const d = document.createElement('div');
     const isAgent = t.role === 'agent';
@@ -1056,15 +1099,15 @@ function renderRunSection() {
     // as recorded (MD off shows the raw text too)
     const body = (isAgent && mdOn && t.text)
       ? MD.render(t.text)
-      : '<div>' + escapeHtml(t.text || '(без текста)') + '</div>';
-    d.innerHTML = `<div class="who">${isAgent ? escapeHtml(n.harness) : isSystem ? 'zori' : 'вы'}</div>` + body;
+      : '<div>' + escapeHtml(t.text || '(no text)') + '</div>';
+    d.innerHTML = `<div class="who">${isAgent ? escapeHtml(n.harness) : isSystem ? 'zori' : 'you'}</div>` + body;
     turnsBox.appendChild(d);
   }
   for (const q of n.questions || []) {
     if (!q.closed && q.answer == null) continue;
     const item = document.createElement('div');
     item.className = 'turn system';
-    item.textContent = q.text + '\n' + (q.answer == null ? 'Вопрос закрыт без ответа' : 'Ваш ответ: ' + q.answer);
+    item.textContent = q.text + '\n' + (q.answer == null ? 'Question closed without an answer' : 'Your answer: ' + q.answer);
     turnsBox.append(item);
   }
   if (stick) stream.scrollTop = stream.scrollHeight;
@@ -1076,34 +1119,41 @@ function renderRunSection() {
   // config, try again), Skipped becomes reachable once its deps are done.
   const canRerun = ['done', 'stale', 'failed', 'skipped'].includes(n.status);
   $('#tm-send').disabled = !canSteer || (inChat && (!chat.connected || chat.sending));
-  $('#tm-send').textContent = canAnswer ? '✉ Ответить' : inChat ? 'Отправить' : '✉ Send & steer';
+  $('#tm-send').textContent = canAnswer ? '✉ Answer' : inChat ? 'Send' : '✉ Send & steer';
   $('#tm-rerun').disabled = !canRerun;
-  $('#tm-msg').disabled = !inChat && !canSteer;
-  $('#tm-msg').placeholder = canAnswer ? 'ответь на вопрос модели…' : inChat ? 'Сообщение модели' : 'сообщение модели (steer)';
+  tmsg.disabled = !inChat && !canSteer;
+  tmsg.placeholder = canAnswer ? 'answer the model\'s question…' : inChat ? 'Message the model' : 'message the model (steer)';
   $('#tm-run-hint').style.color = '';   // a sticky red rerun error clears on re-render
   if (inChat) {
     $('#tm-run-hint').textContent = chat.error || ({
-      pending:'Подключение…', running:'Модель отвечает…', waiting:'Модель ждёт ответа',
-      failed:n.stderr || 'Ошибка запуска', stale:'Сессия прервана',
+      pending:'Connecting…', running:'Model is answering…', waiting:'Model awaits an answer',
+      failed:n.stderr || 'Launch failed', stale:'Session interrupted',
     })[n.status] || '';
     return;
   }
-  $('#tm-run-hint').textContent = n.status === 'waiting' && !canAnswer ? 'ожидаем ответы на вопросы' : canAnswer ? 'модель ждёт ответа — напиши его ниже, узел продолжится в той же сессии' :
+  $('#tm-run-hint').textContent = n.status === 'waiting' && !canAnswer ? 'waiting for answers to questions' : canAnswer ? 'the model awaits an answer — write it below, the node continues in the same session' :
     canSteer ? '' :
-    (n.status === 'running' ? 'выполняется — steer станет доступен по завершении'
-     : n.status === 'failed' ? 'узел упал — исправь конфиг/промпт и нажми ⟳ Rerun (перезапустит с правками)'
-     : n.status === 'skipped' ? 'узел был пропущен (зависимость не завершилась) — ⟳ Rerun запустит его'
-     : n.session ? 'из этого состояния steer недоступен' : 'сессия для возврата не записана');
+    (n.status === 'running' ? 'running — steer becomes available once it finishes'
+     : n.status === 'failed' ? 'node failed — fix the config/prompt and hit ⟳ Rerun (restarts with your edits)'
+     : n.status === 'skipped' ? 'node was skipped (a dependency didn\'t finish) — ⟳ Rerun will launch it'
+     : n.session ? 'steer isn\'t available from this state' : 'no session recorded to return to');
 }
 
 // ---- run actions ---------------------------------------------------------
 async function steerNode() {
-  if (chat.run) return sendChat();
-  if (!editTask) return;
+  if (!editTask) {
+    if (chat.run) return sendChat();
+    if ($('#planner-msg').value.trim() && !chatDialog.open) {
+      chatDialog.showModal();
+      chooseModel();
+    }
+    return;
+  }
   // F08: with no attached run (New/Open detach fully) steering is impossible —
   // never fall back to a leftover runId.
-  if (!state.runId) { note('ран не прикреплён — steer недоступен'); return; }
+  if (!state.runId) { note('no run attached — steer unavailable'); return; }
   const id = (editTask.id || '').trim();
+  const task = editTask;
   const text = $('#tm-msg').value.trim();
   if (!id || !text) return;
   $('#tm-msg').value = '';
@@ -1115,18 +1165,22 @@ async function steerNode() {
   try {
     const snap = await post(`/api/runs/${encodeURIComponent(state.runId)}/${ep}`, { node: id, text });
     state.snap = snap; overlayRun(); renderRunSection();
-  } catch (e) { $('#tm-msg').value = text; note(ep + ' failed: ' + e.message); }
+  } catch (e) {
+    if (editTask === task && !$('#tm-msg').value) $('#tm-msg').value = text;
+    else if (!nodeDrafts.get(task)) nodeDrafts.set(task, text);
+    note(ep + ' failed: ' + e.message);
+  }
 }
 
 // Re-run a node from scratch. When the canvas mirror came from the attached
 // run's own flow file, the current block config rides along ("rerun with
-// fix"): a typo'd model corrected in Конфиг is what actually re-runs. The
+// fix"): a typo'd model corrected in Config is what actually re-runs. The
 // server re-validates (id/deps must match) before applying, so a mirror that
 // drifted topologically is rejected with a clear error instead of silently
 // running something else.
 // Build a rerun body for one node: its id, plus the block's current canvas
 // spec when the canvas mirrors the attached run's flow file — so a fix made
-// in Конфиг rides along ("rerun with fix"), exactly as the inspector does.
+// in Config rides along ("rerun with fix"), exactly as the inspector does.
 function rerunBodyFor(id) {
   const body = { node: id };
   const mirrorTask = nodeById(id);
@@ -1145,7 +1199,7 @@ async function rerunAttached(id) {
     state.snap = snap; overlayRun(); renderRunSection();
   } catch (e) {
     const hint = $('#tm-run-hint');
-    if (hint) { hint.textContent = '⟳ не вышло: ' + e.message; hint.style.color = 'var(--failed)'; }
+    if (hint) { hint.textContent = '⟳ failed: ' + e.message; hint.style.color = 'var(--failed)'; }
     note('rerun failed: ' + e.message);
     throw e;
   }
@@ -1154,7 +1208,7 @@ async function rerunAttached(id) {
 async function rerunNode() {
   if (!editTask) return;
   // F08: rerun needs the attached run; after New/Open there is none until ▶ Run.
-  if (!state.runId) { note('ран не прикреплён — rerun недоступен'); return; }
+  if (!state.runId) { note('no run attached — rerun unavailable'); return; }
   const id = (editTask.id || '').trim();
   if (!id) return;
   try { await rerunAttached(id); } catch (e) { /* already reported */ }
@@ -1174,7 +1228,7 @@ async function rerunStaleAll() {
 //     only this node plus everything it transitively depends on.
 async function runNode(t) {
   const id = (t.id || '').trim();
-  if (!id) { note('сначала дай блоку имя'); return; }
+  if (!id) { note('name the block first'); return; }
   const node = (state.runId && state.snap) ? (state.snap.nodes || {})[id] : null;
   if (node) {
     if (['done', 'stale', 'failed', 'skipped'].includes(node.status)) {
@@ -1183,9 +1237,9 @@ async function runNode(t) {
     }
     // pending/running/waiting: the driver owns this node mid-flight — don't
     // double-drive it. The button is also disabled for these in overlayRun.
-    note(node.status === 'running' ? 'узел выполняется — дождись завершения'
-      : node.status === 'waiting' ? 'узел ждёт ответа — ответь в чате блока'
-      : 'узел уже в очереди этого рана');
+    note(node.status === 'running' ? 'node is running — wait for it to finish'
+      : node.status === 'waiting' ? 'node awaits an answer — reply in the block\'s chat'
+      : 'node is already queued for this run');
     return;
   }
   await focusBoot(id);
@@ -1196,15 +1250,15 @@ async function runNode(t) {
 // like Save → ▶ Run, but with `focus` so only the closure executes.
 async function focusBoot(id) {
   const flow = specForServer();
-  if (!flow.tasks.some(x => (x.id || '').trim() === id)) { note('узел не сохранён — дай ему имя'); return; }
+  if (!flow.tasks.some(x => (x.id || '').trim() === id)) { note('node not saved — name it first'); return; }
   const gate = inputGateError();
   if (gate) { spec.error = gate; spec.pending = false; renderPreview(); return; }
   try {
     const res = await post('/api/flows/boot', { flow, focus: id });
-    note('запущен фокус на «' + id + '» → ' + res.path);
+    note('launched focused on "' + id + '" → ' + res.path);
     await loadSavedList();
     await loadRuns(true);
-    if (res.run_id) { $('#runsel').value = res.run_id; await selectRun(res.run_id); }
+    if (res.run_id) { $('#runsel').value = res.run_id; await selectRun(res.run_id, chat.run); }
   } catch (e) {
     spec.error = e.message; spec.pending = false; renderPreview();
     note('focus run failed: ' + e.message);
@@ -1647,6 +1701,7 @@ function placeBlocks(tasks) {
 // it.
 let selId = null;
 let editTask = null;
+const nodeDrafts = new WeakMap();
 let editEl = null;
 let editIndex = -1;
 const NODE_W = 184;
@@ -1787,18 +1842,6 @@ function addFreeBlock(kind) {
   openEditor(t);
 }
 
-// A block that carries a supermodel chat is marked with a 💬, so the operator
-// sees at a glance which node holds a live dialogue (clicking it reopens it).
-function setChatBadge(el, has) {
-  let b = el.querySelector('.bn-chat');
-  if (has && !b) {
-    b = document.createElement('span');
-    b.className = 'bn-chat'; b.textContent = '💬';
-    b.title = 'У этого блока есть чат с надмоделью — кликни по блоку, чтобы открыть';
-    el.appendChild(b);
-  } else if (!has && b) b.remove();
-}
-
 function nodeEl(t, i) {
   const el = document.createElement('div');
   const id = (t.id || '').trim();
@@ -1810,14 +1853,13 @@ function nodeEl(t, i) {
   const modelBit = t.model ? ' · ' + escapeHtml(t.model) : '';
   const preview = (t.in || '').trim().replace(/\s+/g, ' ');
   el.innerHTML =
-    `<div class="bn-id">${escapeHtml(id || 'новый блок')}</div>` +
+    `<div class="bn-id">${escapeHtml(id || 'new block')}</div>` +
     `<div class="bn-sub">${escapeHtml(t.harness || '')}${modelBit}</div>` +
     (preview ? `<div class="bn-in">${escapeHtml(preview.slice(0, 90))}</div>` : '') +
-    `<button class="bn-act bn-run" data-act="run" title="Запустить / перезапустить этот блок (и его зависимости)" aria-label="Запустить блок">▶</button>` +
-    `<button class="bn-act bn-del" data-act="del" title="Удалить блок" aria-label="Удалить блок">✕</button>` +
-    `<button class="bn-act bn-add" data-act="dep" title="Добавить блок, зависимый от этого" aria-label="Добавить зависимый блок">＋</button>` +
-    `<button class="bn-act bn-dup" data-act="dup" title="Дублировать блок (тот же stage)" aria-label="Дублировать блок">⧉</button>`;
-  setChatBadge(el, !!t.chat);   // 💬 marks a block that carries its own dialogue
+    `<button class="bn-act bn-run" data-act="run" title="Run / rerun this block (and its dependencies)" aria-label="Run block">▶</button>` +
+    `<button class="bn-act bn-del" data-act="del" title="Delete block" aria-label="Delete block">✕</button>` +
+    `<button class="bn-act bn-add" data-act="dep" title="Add a block that depends on this one" aria-label="Add dependent block">＋</button>` +
+    `<button class="bn-act bn-dup" data-act="dup" title="Duplicate block (same stage)" aria-label="Duplicate block">⧉</button>`;
   // action buttons must not trigger the drag-or-click handler; a plain
   // click on the block itself opens its chat (prompt card + dialogue)
   for (const b of el.querySelectorAll('.bn-act')) {
@@ -1867,11 +1909,7 @@ function wireDrag(el, t) {
     down = null;
     el.classList.remove('dragging');
     if (wasDrag) { spec.dirty = true; validateSoon(300); }   // persist the new layout
-    // A plain click opens the block: its own supermodel chat if it carries one
-    // (openEditor reopens the dialogue bound to it), else its config. Navigating
-    // is safe now — a chat is bound to its node, so leaving it only detaches it;
-    // clicking that node again brings the same dialogue back with its transcript.
-    else { selectTask(t.id); openEditor(t); }
+    else openEditor(t);
   };
   el.addEventListener('pointerup', finish);
   el.addEventListener('pointercancel', () => { down = null; el.classList.remove('dragging'); });
@@ -1913,7 +1951,7 @@ function deleteTask(t) {
     if (o.depends_on) o.depends_on = o.depends_on.filter(d => d !== id);
   // If the deleted block was open in the inspector, drop the selection (the
   // panel returns to its empty-chat resting state) and collapse the config.
-  if (editTask === t) { editTask = null; editIndex = -1; editEl = null; renderRunSection(); setCfg(false); }
+  if (editTask === t) deselect();
   if (selId === id) selId = null;
   renderBuilder();
 }
@@ -2012,17 +2050,17 @@ function renderPreview() {
   const st = $('#bstatus');
   if (spec.pending) {
     // Never show a stale "✓ valid" while the authoritative check is in flight.
-    st.innerHTML = `<span style="color:var(--muted)">… проверяю${spec.error ? ' (последняя ошибка: ' + escapeHtml(spec.error) + ')' : ''}</span>`;
+    st.innerHTML = `<span style="color:var(--muted)">… checking${spec.error ? ' (last error: ' + escapeHtml(spec.error) + ')' : ''}</span>`;
   } else if (spec.error) { st.innerHTML = `<span class="err">✗ ${escapeHtml(spec.error)}</span>`; }
   else if (spec.yaml) {
     st.innerHTML = `<span class="ok-line">✓ valid — ${spec.current.tasks.length} task(s), ${(spec.levels || []).length} level(s)</span>`;
     // Yellow, not red: legal when the value is passed via --input at run time,
     // fatal if it never arrives — boot then refuses and repeats these keys.
     if ((spec.warnings || []).length) {
-      st.innerHTML += ` <span style="color:#b8860b">⚠ нет значений для ${spec.warnings.map(w => '${inputs.' + escapeHtml(w) + '}').join(', ')} — заполни Inputs или запусти с --input</span>`;
+      st.innerHTML += ` <span style="color:#b8860b">⚠ no values for ${spec.warnings.map(w => '${inputs.' + escapeHtml(w) + '}').join(', ')} — fill in Inputs or launch with --input</span>`;
     }
   }
-  else { st.innerHTML = '<span style="color:var(--muted)">собери конвейер…</span>'; }
+  else { st.innerHTML = '<span style="color:var(--muted)">build the pipeline…</span>'; }
   $('#byaml').textContent = spec.yaml || '—';
 }
 
@@ -2055,7 +2093,7 @@ function touch() {
 function inputGateError() {
   const bad = parseInputs.bad || [];
   return bad.length
-    ? 'Inputs: строки не распознаны (формат key=value): ' + bad.join(' │ ')
+    ? 'Inputs: lines not recognized (key=value format): ' + bad.join(' │ ')
     : null;
 }
 function validateSoon(ms) {
@@ -2093,10 +2131,10 @@ async function saveAndRun() {
   if (gate) { spec.error = gate; spec.pending = false; renderPreview(); return; }
   try {
     const res = await post('/api/flows/boot', { flow });
-    note('запущено ' + res.path);
+    note('launched ' + res.path);
     await loadSavedList();
     await loadRuns(true);
-    if (res.run_id) { $('#runsel').value = res.run_id; await selectRun(res.run_id); }
+    if (res.run_id) { $('#runsel').value = res.run_id; await selectRun(res.run_id, chat.run); }
   } catch (e) {
     // Keep the server's refusal in the status bar, not just the 4s note: this
     // is where a missing ${inputs.k} surfaces, and its wording names the keys.
@@ -2106,14 +2144,14 @@ async function saveAndRun() {
 }
 
 async function loadSavedList() {
-  // One source (/api/flows) feeds both the header «Пайплайны» dropdown and the
-  // YAML pop-up's «открыть…» — the header list is the primary way to open a
+  // One source (/api/flows) feeds both the header "Pipelines" dropdown and the
+  // YAML pop-up's "open…" — the header list is the primary way to open a
   // pure template; the pop-up keeps its copy so the modal still stands alone.
   try {
     const flows = await api('/api/flows');
     const opts = flows.map(f => ({ value: f.path, text: f.name }));
-    for (const [sel, none] of [[$('#flowsel'), '— выбрать пайплайн —'],
-                               [$('#b-open'), 'открыть…']]) {
+    for (const [sel, none] of [[$('#flowsel'), '— select a pipeline —'],
+                               [$('#b-open'), 'open…']]) {
       if (!sel) continue;
       const keep = sel.value;
       sel.innerHTML = '';
@@ -2139,6 +2177,7 @@ function detachFromRun() {
   sessionStorage.removeItem('zori-attached-run');
   state.runId = null; state.snap = null;
   lastLoadedRun = null;
+  leaveChat();
   spec.fromRunFile = false;
   selId = null;
   deselect();
@@ -2157,6 +2196,8 @@ async function openSaved(path) {
     // its id.
     detachFromRun();
     spec.current = normaliseFlow(flow);
+    const planner = spec.current.tasks.find(t => t.chat)?.chat;
+    if (planner && state.runs.some(r => r.run_id === planner)) openChat(planner);
     // Not (necessarily) the attached run's file — reruns stay spec-less.
     spec.fromRunFile = false;
     spec.levels = null; spec.error = null; spec.yaml = ''; spec.warnings = [];
@@ -2276,7 +2317,7 @@ function mergeGraphIntoCanvas(baseIn, canvas, proposal) {
   return merged;
 }
 
-// ---- model catalogs + deps chips (Конфиг tab) -----------------------------
+// ---- model catalogs + deps chips (Config tab) -----------------------------
 //
 // Live model catalogs per harness, pulled from the server (which pulls them
 // from the CLIs themselves — see crate::models). `state` drives the hint
@@ -2314,9 +2355,9 @@ function renderModelDrop() {
   drop.innerHTML = '';
   if (!items.length) {
     const d = document.createElement('div'); d.className = 'none';
-    d.textContent = (cat && cat.state === 'loading') ? 'загружаю каталог из CLI…'
+    d.textContent = (cat && cat.state === 'loading') ? 'loading catalog from the CLI…'
       : (cat && cat.state !== 'ok' && cat.state) ? String(cat.state)
-      : 'не найдено — можно ввести id вручную';
+      : 'not found — you can enter an id manually';
     drop.appendChild(d);
   } else {
     if (mdIndex < 0) mdIndex = 0;
@@ -2354,7 +2395,7 @@ function renderModelHint() {
   if (!cat || cat.state === 'loading') { hint.textContent = '…'; return; }
   if (cat.state === 'ok') {
     const dflt = cat.default ? ' · default: ' + cat.default : '';
-    hint.textContent = cat.models.length + ' из CLI' + dflt + ' · ' + cat.source;
+    hint.textContent = cat.models.length + ' from the CLI' + dflt + ' · ' + cat.source;
     // Helpful placeholder only — never overwrite the task's own value.
     if (cat.default) $('#tm-model').placeholder = cat.default;
   } else {
@@ -2397,7 +2438,7 @@ function renderDepBoxes() {
   const deps = new Set(editTask.depends_on || []);
   const others = spec.current.tasks.filter(o => o !== editTask && (o.id || '').trim());
   if (!others.length) {
-    box.innerHTML = '<span style="color:var(--muted);font-size:12px">нет других блоков</span>';
+    box.innerHTML = '<span style="color:var(--muted);font-size:12px">no other blocks</span>';
     return;
   }
   for (const o of others) {
@@ -2434,7 +2475,7 @@ function renderSkillBoxes() {
   const names = SKILLS.list.map(s => s.name);
   for (const c of chosen) if (!byName.has(c)) names.push(c);
   if (!names.length) {
-    box.innerHTML = '<span style="color:var(--muted);font-size:12px">хранилище пусто — добавьте &lt;имя&gt;.md в zori-skills/ или ~/.zori/skills</span>';
+    box.innerHTML = '<span style="color:var(--muted);font-size:12px">the library is empty — add &lt;name&gt;.md to zori-skills/ or ~/.zori/skills</span>';
     return;
   }
   for (const name of names) {
@@ -2467,8 +2508,7 @@ function updateNodeChrome(t) {
   const id = (t.id || '').trim();
   el.dataset.id = t.id;
   el.classList.toggle('empty', !id);
-  setChatBadge(el, !!t.chat);
-  el.querySelector('.bn-id').textContent = id || 'новый блок';
+  el.querySelector('.bn-id').textContent = id || 'new block';
   el.querySelector('.bn-sub').textContent = (t.harness || '') + (t.model ? ' · ' + t.model : '');
   const bi = el.querySelector('.bn-in');
   const txt = (t.in || '').trim().replace(/\s+/g, ' ').slice(0, 90);
@@ -2483,8 +2523,8 @@ function updateNodeChrome(t) {
 //
 // Clicking a block (a click, not a drag) selects it and opens its CHAT —
 // one console: the stream (start prompt as the first tinted line, then the
-// dialogue) plus the ❯ input at the bottom. The config (название /
-// harness / модель / зависимости-чекбоксы / директория) lives in a collapsible
+// dialogue) plus the ❯ input at the bottom. The config (name /
+// harness / model / dependency checkboxes / directory) lives in a collapsible
 // strip above the chat; the toggle button doubles as the block's one-line
 // summary. Edits commit live into the task object (each change repaints the
 // block and re-validates); there is no OK/Cancel — Esc or a click on empty
@@ -2502,9 +2542,9 @@ function setCfg(open) {
 // The toggle's own label: everything important at a glance while collapsed.
 function updateCfgSummary() {
   const el = $('#icfg-sum');
-  if (!el || !editTask) { if (el) el.textContent = 'конфиг блока'; return; }
+  if (!el || !editTask) { if (el) el.textContent = 'block config'; return; }
   const t = editTask;
-  let s = ((t.id || '').trim() || 'новый блок') + ' · ' + (t.harness || '');
+  let s = ((t.id || '').trim() || 'new block') + ' · ' + (t.harness || '');
   if (t.model) s += ' · ' + t.model;
   const d = (t.depends_on || []).length;
   if (d) s += ' · ' + d + ' dep' + (d > 1 ? 's' : '');
@@ -2521,8 +2561,20 @@ function autogrow(ta, max = 300) {
   ta.style.height = Math.min(ta.scrollHeight + 2, max) + 'px';
 }
 
+function switchNodeInput(next) {
+  if (editTask === next) return;
+  const input = $('#tm-msg');
+  if (editTask) nodeDrafts.set(editTask, input.value);
+  input.value = next ? nodeDrafts.get(next) || '' : '';
+  const prompt = $('#tm-in');
+  if ($('#start-line').contains(prompt)) {
+    $('#pane-chat').appendChild(prompt);
+    prompt.classList.add('hidden');
+  }
+}
+
 function openEditor(t) {
-  leaveChat();
+  switchNodeInput(t);
   editTask = t;
   editIndex = spec.current.tasks.indexOf(t);
   editEl = elFor(t.id);
@@ -2555,12 +2607,6 @@ function openEditor(t) {
   updateCfgSummary();
   renderRunSection();   // builds the console: stream + the right ❯ input
   autogrow($('#tm-out'), 160);
-  // A block that carries a supermodel chat opens ON its dialogue: the chat is
-  // hard-bound to the node, so reopening the node brings the same conversation
-  // back (the SSE 'state' event repopulates the transcript and the per-run
-  // draft). The config strip is loaded above; the model-chat CSS hides it while
-  // the dialogue shows, so ✕/Esc drops back to the config like any other block.
-  if (t.chat) { openChat(t.chat); return; }
   // Otherwise the console input is the entry point — but only when it is the
   // visible one (authoring state, no run): with a run attached the input is the
   // steer composer and stealing focus would fight the reader.
@@ -2569,13 +2615,14 @@ function openEditor(t) {
   setTimeout(() => { if (!tin.classList.contains('hidden')) tin.focus(); }, 0);
 }
 
-// Drop the selection: the panel returns to its empty-chat resting state.
+// The planner session stays subscribed while the operator inspects nodes.
 // Edits were already committed live, so there is nothing to restore.
 function deselect() {
-  leaveChat();
+  switchNodeInput(null);
   editTask = null; editIndex = -1; editEl = null;
   selectTask(null);
   setCfg(false);
+  placeProposalOnCanvas(chat.node);
   renderRunSection();
 }
 
@@ -2593,15 +2640,14 @@ document.addEventListener('keydown', e => {
   if (!$('#yamlmodal').classList.contains('hidden')) closeYaml();
   else if (!$('#inputsmodal').classList.contains('hidden')) closeInputs();
   else if (!$('#addblk-menu').classList.contains('hidden')) closeAddMenu();
-  else if (chat.run) returnToGraph();
   else deselect();
 });
 
 // ---- wire up -------------------------------------------------------------
-// ＋ Задача/Промпт split button: the main part adds the remembered kind, the
+// ＋ Task/Prompt split button: the main part adds the remembered kind, the
 // caret opens the two-option menu (task with an agent / prompt starter block).
 let addKind = 'task';
-const ADD_LABEL = { task: 'Задача', prompt: 'Промпт' };
+const ADD_LABEL = { task: 'Task', prompt: 'Prompt' };
 function closeAddMenu() { $('#addblk-menu').classList.add('hidden'); }
 $('#addblk-main').addEventListener('click', () => addFreeBlock(addKind));
 $('#addblk-caret').addEventListener('click', (e) => {
@@ -2627,14 +2673,13 @@ $('#b-new').addEventListener('click', () => {
   spec.current = blankSpec(); spec.levels = null; spec.error = null;
   spec.yaml = ''; spec.warnings = []; selId = null; spec.fromRunFile = false;
   deselect(); closeInputs(); renderBuilder(true);
-  openEditor(spec.current.tasks[0]);   // a blank flow starts on its prompt card
 });
 // (no Validate button anymore: every edit re-checks via touch(), and save/boot
 // are refused server-side anyway)
 $('#b-save').addEventListener('click', saveFlow);
 $('#b-run').addEventListener('click', saveAndRun);
 $('#b-open').addEventListener('change', (e) => openSaved(e.target.value));
-// The header «Пайплайны» dropdown opens a pure template; picking one detaches
+// The header "Pipelines" dropdown opens a pure template; picking one detaches
 // from any run first (openSaved does that) so it never keeps the old run's chat.
 $('#flowsel').addEventListener('change', (e) => openSaved(e.target.value));
 // meta inputs re-validate on change (the Inputs textarea lives in its pop-up,
@@ -2644,7 +2689,7 @@ for (const id of ['#bf-name', '#bf-cwd'])
 
 // inspector: config toggle + YAML button + deselect
 $('#icfg-toggle').addEventListener('click', () => { if (editTask) setCfg(!cfgOpen); });
-$('#ins-close').addEventListener('click', () => chat.run ? returnToGraph() : deselect());
+$('#ins-close').addEventListener('click', deselect);
 // YAML lives in its own modal now: levels + the file that will be written
 function openYaml() { renderPreview(); $('#yamlmodal').classList.remove('hidden'); }
 function closeYaml() { $('#yamlmodal').classList.add('hidden'); }
@@ -2771,7 +2816,7 @@ $('#inputsmodal').addEventListener('click', (e) => { if (e.target.id === 'inputs
 // on the wrap proved flaky in real Safari (headless Chrome passed, the
 // owner's browser did not move at all). A *click* on the empty background —
 // pointerdown+up with no drag — drops the selection and the panel returns to
-// its empty-chat resting state; a pan never deselects, so sweeping the graph
+// the planner; a pan never deselects, so sweeping the graph
 // around does not close the chat you are reading. Blocks and the zoom pill
 // are excluded: blocks drag/select on their own, the pill clicks on its own.
 (function canvasPan() {
@@ -2795,9 +2840,6 @@ $('#inputsmodal').addEventListener('click', (e) => { if (e.target.id === 'inputs
     if (!pan) return;
     const { bg, moved } = pan; pan = null;
     wrap.classList.remove('panning');
-    // A plain background click drops the selection. A running chat no longer
-    // needs protecting here: it is bound to its node, so this click only detaches
-    // it — the transcript is safe and returns when the node is clicked again.
     if (!moved && bg && e.type === 'pointerup') deselect();
   };
   window.addEventListener('pointerup', finish);
@@ -2846,6 +2888,8 @@ $('#zoom-fit').addEventListener('click', fitView);
     SKILLS.list = await api('/api/skills');
     if (editTask) renderSkillBoxes();   // the editor may have opened before this resolved
   } catch (e) { /* no picker; existing skills on a block still render their count */ }
+  // The fleet badge fills at boot too; a fetch failure just leaves it blank.
+  loadFleetBadge();
   await loadSavedList();
 })();
 
@@ -2855,15 +2899,18 @@ $('#tm-rerun').addEventListener('click', rerunNode);   // fix the prompt/config 
 $('#tm-md').addEventListener('click', () => setMd(!mdOn));
 $('#tm-md').setAttribute('aria-pressed', String(mdOn));   // reflect the stored MD choice on load
 $('#rerunstale').addEventListener('click', rerunStaleAll);
-$('#tm-msg').addEventListener('input', () => autogrow($('#tm-msg'), 200));
-$('#tm-msg').addEventListener('keydown', (e) => {
+for (const input of [$('#tm-msg'), $('#planner-msg')]) {
+  input.addEventListener('input', () => autogrow(input, 200));
+  input.addEventListener('keydown', sendOnEnter);
+}
+function sendOnEnter(e) {
   if (e.key !== 'Enter' || e.isComposing) return;
   // Chat-like: Enter sends, Shift+Enter is a newline; ⌘/Ctrl+Enter kept.
   if ((e.metaKey || e.ctrlKey) || (!e.shiftKey && !e.altKey)) {
     e.preventDefault();
-    if (!$('#tm-msg').disabled) steerNode();
+    if (!$('#tm-send').disabled) steerNode();
   }
-});
+}
 // Start-prompt edit-in-place: the stream's first tinted line turns into the
 // ❯ textarea right where it sits (fix-and-rerun stays one click away); blur
 // or Esc commits it back to a display line. The value was already flowing
@@ -2904,7 +2951,7 @@ function chatStage(stage, title) {
 }
 function promptChoice() {
   if (!editTask || !$('#tm-in').value.trim() || chatDialog.open) return;
-  chatStage('mode', 'Как использовать промпт?');
+  chatStage('mode', 'How should the prompt be used?');
   chatDialog.showModal();
   $('#choose-prompt').focus();
 }
@@ -2923,9 +2970,9 @@ function chatButton(label, action) {
 }
 async function chooseModel() {
   const token = ++chat.request;
-  chatStage('models', 'Выберите модель');
+  chatStage('models', 'Choose a model');
   const groups = $('#chat-models');
-  groups.textContent = 'Загрузка харнессов…';
+  groups.textContent = 'Loading harnesses…';
   try {
     const harnesses = HARNESS.list.length ? HARNESS.list : await api('/api/harnesses');
     if (token !== chat.request) return;
@@ -2940,7 +2987,7 @@ async function chooseModel() {
       group.ontoggle = async () => {
         if (!group.open || loaded) return;
         loaded = true;
-        list.textContent = 'Загрузка моделей…';
+        list.textContent = 'Loading models…';
         try {
           const data = await api('/api/harnesses/' + encodeURIComponent(h.id) + '/models');
           if (token !== chat.request) return;
@@ -2950,33 +2997,261 @@ async function chooseModel() {
             b.title = data.metadata?.[id]?.description || id;
             list.append(b);
           }
-          if (!data.models.length) list.textContent = 'Харнесс не вернул моделей';
+          if (!data.models.length) list.textContent = 'The harness returned no models';
         } catch (e) {
-          list.textContent = 'Не удалось получить модели: ' + e.message;
+          list.textContent = 'Failed to fetch models: ' + e.message;
           loaded = false; // reopening retries discovery
         }
       };
     }
     const first = groups.querySelector('summary');
-    if (first) first.focus(); else groups.textContent = 'Нет харнессов для чата';
+    if (first) first.focus(); else groups.textContent = 'No harnesses available for chat';
   } catch (e) {
-    if (token === chat.request) groups.replaceChildren(chatButton('Повторить загрузку', chooseModel));
+    if (token === chat.request) groups.replaceChildren(chatButton('Retry loading', chooseModel));
   }
 }
 $('#choose-chat').onclick = chooseModel;
+
+// ---- The model fleet (⚓ Fleet) ------------------------------------------
+// The personal roster: which (harness, model) pairs the operator actually
+// runs. Saved to ~/.zori/fleet.json via /api/fleet; planner chats receive it
+// as the "Model fleet" section of their brief and propose from it. Same
+// dialog shape as the chat picker, but Enter toggles a pick and the dialog
+// stays open until Save or Esc — multi-select, not one-shot commit.
+
+// Pure helpers (sliced into web/spec.test.mjs — keep them as `function`
+// declarations with no DOM access).
+
+function fleetKey(harness, model) {
+  return harness + '\u0000' + model;
+}
+
+// Server payload {models:[{harness,model}]} → Map key→entry: trims, drops
+// junk rows, de-duplicates, preserves order.
+function fleetParsed(payload) {
+  const map = new Map();
+  for (const e of (payload && payload.models) || []) {
+    if (!e || typeof e.harness !== 'string' || typeof e.model !== 'string') continue;
+    const harness = e.harness.trim(), model = e.model.trim();
+    if (!harness || !model || map.has(fleetKey(harness, model))) continue;
+    map.set(fleetKey(harness, model), { harness, model });
+  }
+  return map;
+}
+
+// Map → the PUT payload, in stable order (insertion order = what Save sends).
+function fleetWire(map) {
+  return { models: Array.from(map.values()) };
+}
+
+const fleetDialog = $('#fleet-dialog');
+const fleet = { picked: new Map(), dirty: false, token: 0 };
+
+function fleetBadge(n) {
+  $('#fleet-n').textContent = n ? ' · ' + n : '';
+}
+
+function fleetCount() {
+  $('#fleet-count').textContent = fleet.picked.size + (fleet.dirty ? ' picked · unsaved' : ' picked');
+}
+
+async function loadFleetBadge() {
+  if (fleet.token) return;
+  try {
+    const saved = fleetParsed(await api('/api/fleet'));
+    if (!fleet.token) fleetBadge(saved.size);
+  } catch (e) { /* badge stays empty; the dialog shows fetch errors itself */ }
+}
+
+function fleetCountIn(harness) {
+  let n = 0;
+  for (const e of fleet.picked.values()) if (e.harness === harness) n++;
+  return n;
+}
+
+function fleetRow(harness, model, title) {
+  const b = document.createElement('button');
+  const render = () => {
+    b.classList.toggle('picked', fleet.picked.has(fleetKey(harness, model)));
+    b.textContent = (fleet.picked.has(fleetKey(harness, model)) ? '✓ ' : '') + model;
+  };
+  b.type = 'button';
+  b.title = title;
+  render();
+  b.onclick = () => {
+    const k = fleetKey(harness, model);
+    if (fleet.picked.has(k)) fleet.picked.delete(k);
+    else fleet.picked.set(k, { harness, model });
+    fleet.dirty = true;
+    render();
+    fleetCount();
+  };
+  return b;
+}
+
+// One harness as a collapsed <details>; models load lazily on first open,
+// exactly like the chat picker. Picks the live catalog does not list stay
+// toggleable below the discovered ids — the catalog is a convenience, not
+// the authority on what is valid (the Model field runs on the same rule).
+function fleetGroup(h, token) {
+  const group = document.createElement('details');
+  const summary = document.createElement('summary');
+  summary.textContent = h.id;
+  const cnt = document.createElement('span');
+  cnt.className = 'fnote';
+  summary.append(cnt);
+  const list = document.createElement('div');
+  group.append(summary, list);
+  const syncCount = () => {
+    const n = fleetCountIn(h.id);
+    cnt.textContent = n ? n + ' picked' : '';
+  };
+  syncCount();
+  list.addEventListener('click', syncCount);
+  let loaded = false;
+  group.ontoggle = async () => {
+    if (!group.open || loaded) return;
+    loaded = true;
+    list.textContent = 'Loading models…';
+    try {
+      const data = await api('/api/harnesses/' + encodeURIComponent(h.id) + '/models');
+      if (token !== fleet.token) return;
+      list.replaceChildren();
+      const seen = new Set();
+      for (const id of data.models) {
+        seen.add(id);
+        list.append(fleetRow(h.id, id, data.metadata?.[id]?.description || id));
+      }
+      for (const e of fleet.picked.values()) {
+        if (e.harness === h.id && !seen.has(e.model)) {
+          const b = fleetRow(e.harness, e.model, 'saved pick — not in the live catalog');
+          b.classList.add('saved-only');
+          list.append(b);
+        }
+      }
+      if (!list.childElementCount) list.textContent = 'The harness returned no models';
+      syncCount();
+    } catch (e) {
+      list.textContent = 'Could not load models: ' + e.message;
+      loaded = false; // reopening retries discovery
+    }
+  };
+  return group;
+}
+
+// Saved picks on a harness this /api/harnesses does not know (a custom
+// override, a removed CLI) stay visible and removable — never silently
+// dropped by Save.
+function fleetGhostGroup(harness) {
+  const group = document.createElement('details');
+  const summary = document.createElement('summary');
+  summary.textContent = harness;
+  const cnt = document.createElement('span');
+  cnt.className = 'fnote';
+  cnt.textContent = 'not in this builder';
+  summary.append(cnt);
+  const list = document.createElement('div');
+  group.append(summary, list);
+  group.ontoggle = () => {
+    if (!group.open || list.childElementCount) return;
+    for (const e of fleet.picked.values()) {
+      if (e.harness === harness) {
+        const b = fleetRow(harness, e.model, 'saved pick — harness not in this builder');
+        b.classList.add('saved-only');
+        list.append(b);
+      }
+    }
+  };
+  return group;
+}
+
+async function openFleet() {
+  const token = ++fleet.token;
+  if (!fleetDialog.open) fleetDialog.showModal();
+  const groups = $('#fleet-groups');
+  $('#fleet-save').disabled = true;
+  $('#fleet-count').textContent = '';
+  $('#fleet-error').textContent = '';
+  groups.textContent = 'Loading harnesses…';
+  try {
+    const [harnesses, saved] = await Promise.all([
+      HARNESS.list.length ? HARNESS.list : api('/api/harnesses'),
+      api('/api/fleet'),
+    ]);
+    if (!fleetDialog.open || token !== fleet.token) return;
+    fleet.picked = fleetParsed(saved);
+    fleet.dirty = false;
+    groups.replaceChildren();
+    const agentModelHs = harnesses.filter(h => h.is_agent && h.supports_model);
+    for (const h of agentModelHs) groups.append(fleetGroup(h, token));
+    const known = new Set(agentModelHs.map(h => h.id));
+    for (const e of fleet.picked.values()) {
+      if (!known.has(e.harness)) groups.append(fleetGhostGroup(e.harness));
+    }
+    const first = groups.querySelector('summary');
+    if (first) first.focus();
+    else groups.textContent = 'No model-capable agent harnesses found';
+    fleetBadge(fleet.picked.size);
+    fleetCount();
+    $('#fleet-save').disabled = false;
+  } catch (e) {
+    if (!fleetDialog.open || token !== fleet.token) return;
+    $('#fleet-error').textContent = e.message;
+    groups.replaceChildren(chatButton('Retry', openFleet));
+  }
+}
+
+async function saveFleet() {
+  const btn = $('#fleet-save');
+  btn.disabled = true;
+  $('#b-fleet').disabled = true;
+  $('#fleet-groups').inert = true;
+  try {
+    const d = await api('/api/fleet', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(fleetWire(fleet.picked)),
+    });
+    fleetBadge(fleetParsed(d).size);
+    $('#b-fleet').disabled = false;
+    if (fleetDialog.open) fleetDialog.close();
+  } catch (e) {
+    $('#fleet-error').textContent = e.message;
+  } finally {
+    $('#fleet-groups').inert = false;
+    $('#b-fleet').disabled = false;
+    btn.disabled = false;
+  }
+}
+
+$('#b-fleet').onclick = openFleet;
+$('#fleet-save').onclick = saveFleet;
+$('#fleet-close').onclick = () => fleetDialog.close();
+// Arrow keys rove focus across summaries and model buttons, same as the chat
+// dialog; Enter is native (button = toggle, summary = expand/collapse).
+fleetDialog.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') e.stopPropagation();
+  if (!['ArrowDown','ArrowUp'].includes(e.key)) return;
+  const items = Array.from(fleetDialog.querySelectorAll('#fleet-groups summary, #fleet-groups details[open] button'));
+  const i = items.indexOf(document.activeElement);
+  if (items.length) {
+    e.preventDefault();
+    items[(i + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length].focus();
+  }
+});
 async function beginChat(harness, model) {
   if (chat.busy) return;
   const task = editTask;
-  const prompt = $('#tm-in').value;
+  const prompt = (task ? $('#tm-in') : $('#planner-msg')).value;
   const previous = draftBeforeTyping;
   chat.busy = true;
-  $('#chat-error').textContent = 'Открываю чат…';
+  $('#chat-error').textContent = 'Opening chat…';
   // The planner toggle (default on): when on we send no `skills` and the server
   // attaches both built-in planner skills (zori-config cheat-sheet + zori-planner
   // discipline); when off we send an explicit empty list so the chat runs plain.
   // (Only the chat path uses this; a node's own skills live on the block.)
   const planner = $('#chat-planner');
-  const body = { harness, model, prompt };
+  const body = { harness, model, prompt, graph: specForServer(), attached_run: state.runId };
   if (planner && !planner.checked) body.skills = [];
   // The project folder from the builder's meta bar — read from the live DOM
   // value (spec.current only syncs on other paths). Empty → the server keeps
@@ -2991,41 +3266,33 @@ async function beginChat(harness, model) {
       $('#tm-in').value = previous;
       updateNodeChrome(task); touch();
     }
+    if (!task) $('#planner-msg').value = '';
     openChat(run_id);
-    // Hard-bind the dialogue to the block that started it (see Task.chat), so
-    // it reopens there wherever the operator wanders and rides save/open. Mark
-    // the flow dirty so the binding is persisted on the next save.
+    chat.canvasBase = body.graph;
+    // Older flow files store the planner link on the originating block.
     if (task) { task.chat = run_id; updateNodeChrome(task); touch(); }
     loadRuns(true).catch(e => note(e.message));
   } catch (e) { $('#chat-error').textContent = e.message; }
   finally { chat.busy = false; }
 }
 function leaveChat() {
-  if (!chat.run) return;
-  chat.drafts.set(chat.run, $('#tm-msg').value);
+  if (chat.run) chat.drafts.set(chat.run, $('#planner-msg').value);
   chat.events?.close();
   chat.events = null;
   chat.run = null;
   chat.node = null;
-  $('#tm-msg').value = chat.blockDraft;
-  autogrow($('#tm-msg'), 200);
+  $('#planner-msg').value = '';
   $('#runsel').value = state.runId || '';
   sessionStorage.removeItem('zori-open-chat');
 }
 
-function returnToGraph() {
-  leaveChat();
-  renderRunSection();
-  const input = $('#cin textarea:not(.hidden)');
-  if (input && !input.disabled) input.focus();
-}
-
 function openChat(id) {
-  leaveChat();
   if (chatDialog.open) chatDialog.close();
-  chat.blockDraft = $('#tm-msg').value;
+  if (chat.run === id) { deselect(); return; }
+  leaveChat();
+  deselect();
   chat.run = id;
-  chat.node = { id:'chat', status:'pending', harness:'чат' };
+  chat.node = { id:'chat', status:'pending', harness:'chat' };
   chat.connected = false;
   chat.error = '';
   chat.sending = false;
@@ -3036,11 +3303,12 @@ function openChat(id) {
   chat.canvasBase = null;
   chat.mergedHash = null;
   sessionStorage.setItem('zori-open-chat', id);
-  $('#runsel').value = id;
-  $('#tm-msg').value = chat.drafts.get(id) || '';
+  if (state.runId) sessionStorage.setItem('zori-planner:' + state.runId, id);
+  $('#runsel').value = state.runId || id;
+  $('#planner-msg').value = chat.drafts.get(id) || '';
   renderRunSection();
-  autogrow($('#tm-msg'), 200);
-  $('#tm-msg').focus();
+  autogrow($('#planner-msg'), 200);
+  $('#planner-msg').focus();
   const es = new EventSource('/api/runs/' + encodeURIComponent(id) + '/events');
   chat.events = es;
   es.addEventListener('state', event => {
@@ -3048,19 +3316,19 @@ function openChat(id) {
     chat.node = JSON.parse(event.data).nodes.chat;
     if (!chat.connected) chat.error = '';
     chat.connected = true;
-    placeProposalOnCanvas(chat.node);
+    if (!editTask) placeProposalOnCanvas(chat.node);
     renderRunSection();
   });
   es.onerror = () => {
     if (chat.events !== es) return;
     chat.connected = false;
-    chat.error = 'Связь прервана, переподключение…';
+    chat.error = 'Connection lost, reconnecting…';
     renderRunSection();
   };
 }
 
 async function sendChat() {
-  const id = chat.run, input = $('#tm-msg'), text = input.value;
+  const id = chat.run, input = $('#planner-msg'), text = input.value;
   if (!text.trim() || $('#tm-send').disabled) return;
   const session = chat.events;
   chat.sending = true;
@@ -3075,7 +3343,8 @@ async function sendChat() {
   try {
     const graph = specForServer();
     chat.canvasBase = JSON.parse(JSON.stringify(graph));
-    await post('/api/runs/' + encodeURIComponent(id) + '/steer', {node:'chat', text, graph});
+    const action = chat.node?.status === 'waiting' ? 'answer' : 'steer';
+    await post('/api/runs/' + encodeURIComponent(id) + '/' + action, {node:'chat', text, graph, attached_run: state.runId});
     if (chat.run === id && input.value === text) {
       input.value = '';
       autogrow(input, 200);
@@ -3105,7 +3374,7 @@ async function sendChat() {
 // stays put and the card next to it already spells out why (p.errors).
 function placeProposalOnCanvas(node) {
   const p = node && node.proposal;
-  if (!p || !p.valid || !p.spec) return;
+  if (!p || !p.valid || !p.spec || (state.runId && p.status !== 'proposed')) return;
   if (p.hash === chat.mergedHash) return;
   const merged = mergeGraphIntoCanvas(p.base ?? chat.canvasBase, specForServer(), p.spec);
   spec.current = merged;
@@ -3158,8 +3427,8 @@ $('#tm-in').addEventListener('keydown', (e) => {
 // and the attached run streams its own state over SSE)
 
 renderBuilder();   // start on the canvas with one blank block, run detached
+deselect();
 applyView();       // identity transform first; a loaded flow fits itself via fitView
-openEditor(spec.current.tasks[0]);   // the default graph opens ON its prompt card
 const rememberedRun = sessionStorage.getItem('zori-attached-run');
 loadRuns(false).then(async () => {
   const previousChat = sessionStorage.getItem('zori-open-chat');

@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, Context, Result};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
-use tokio::sync::Semaphore;
+use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard, Semaphore};
 
 use crate::artifacts::{self, AttemptMeta, AttemptRecord, ManifestStore, OutFile, RunDirs};
 use crate::config::{Flow, PromptVia, Task, Workspace};
@@ -699,8 +699,8 @@ fn render_prompt(
     // whose result its `in` does not already place itself via
     // `${steps.<id>.…}`, is appended as a `# <id>` section. A drawn edge is
     // then enough to feed a result downstream — no hand-written joins
-    // (the owner's ask: «если связь есть — значит в промпт уже точно
-    // добавляется результат с комментом из какого узла»). Deps referenced
+    // (the owner's ask: "if there is an edge, the prompt already gets the
+    // result with a comment naming its node"). Deps referenced
     // explicitly are skipped so their output lands exactly once.
     let mut fed = String::new();
     for dep in &task.depends_on {
@@ -1329,6 +1329,8 @@ enum ExecMode {
     /// Resume an existing session with this human/system message (the
     /// watchdog's nudges and canned answers take the same path as a steer).
     Resume(SessionRef, String),
+    /// One report-only turn after Coddy exhausted its step budget.
+    CoddySummary { sessions_dir: PathBuf, session_id: String },
 }
 
 /// A live run the console can inspect, steer and re-execute. Owns everything
@@ -1346,6 +1348,11 @@ pub struct TrackedRun {
     pub out_dir: PathBuf,
     /// The run's artifact tree + manifest (attempts under `tasks/<id>/`).
     pub art: RunArtifacts,
+    // First-pass nodes currently inside the level barrier. A worker owns its
+    // node through all watchdog turns. A manual retry can take ownership
+    // after failure and hold the barrier until its corrected output is ready.
+    level_nodes: Arc<StdMutex<HashMap<String, Arc<AsyncMutex<()>>>>>,
+    permits: Arc<Semaphore>,
     /// Operator edits applied to individual tasks after boot (the console's
     /// rerun-with-fix): topology stays frozen — an edit may correct leaf
     /// fields (model, prompt, out, cwd, timeout, args, env, optional) but not
@@ -1390,7 +1397,11 @@ impl TrackedRun {
         let default_timeout = flow_default_timeout(&flow);
         let inputs = resolved_inputs(&flow, extra_inputs);
         let art = RunArtifacts::adopt(&out_dir, &flow, &plan, &inputs)?;
+        let parallelism = flow.max_parallel.unwrap_or(flow.tasks.len())
+            .clamp(1, Semaphore::MAX_PERMITS);
         Ok(TrackedRun {
+            level_nodes: Default::default(),
+            permits: Arc::new(Semaphore::new(parallelism)),
             flow,
             plan,
             inputs,
@@ -1491,6 +1502,16 @@ impl TrackedRun {
             .collect()
     }
 
+    /// Reserve a failed node in the active level. Taking the guard under the
+    /// registry lock makes admission atomic with the scheduler closing the level.
+    pub(crate) fn reserve_level_retry(&self, id: &str) -> Result<Option<OwnedMutexGuard<()>>> {
+        let nodes = self.level_nodes.lock().expect("level nodes lock");
+        nodes.get(id)
+            .map(|lock| lock.clone().try_lock_owned()
+                .map_err(|_| anyhow!("node '{id}' is still executing")))
+            .transpose()
+    }
+
     /// Run every node, level by level, updating `emitter` as it goes. The
     /// nodes of one level run **concurrently**, capped by
     /// `flow.max_parallel` (unset → the whole level at once — the same
@@ -1548,7 +1569,13 @@ impl TrackedRun {
                 }
                 runnable.push(task.clone());
             }
-            self.run_level(emitter, runnable).await;
+            self.run_level(emitter, runnable, true).await;
+            // Close admission first, then join any retry accepted before the
+            // boundary. Only then can the next level evaluate dependencies.
+            let nodes = std::mem::take(&mut *self.level_nodes.lock().expect("level nodes lock"));
+            for lock in nodes.into_values() {
+                drop(lock.lock().await);
+            }
         }
     }
 
@@ -1558,17 +1585,19 @@ impl TrackedRun {
     /// spawns, and shared by every sibling (see [`ExecMode::FirstRun`]).
     /// Returns only when every node of the level is terminal — the level
     /// barrier (D3).
-    async fn run_level(&self, emitter: &Emitter, nodes: Vec<Task>) {
+    async fn run_level(&self, emitter: &Emitter, nodes: Vec<Task>, first_pass: bool) {
         if nodes.is_empty() {
             return;
         }
-        let permits = Arc::new(Semaphore::new(
-            self.flow.max_parallel.unwrap_or(nodes.len()).max(1),
-        ));
         let outputs = self.outputs_snapshot(emitter);
         let mut handles = Vec::new();
         for task in nodes {
-            let permits = Arc::clone(&permits);
+            let owner = first_pass.then(|| {
+                let lock = Arc::new(AsyncMutex::new(()));
+                let guard = lock.clone().try_lock_owned().expect("new node lock");
+                self.level_nodes.lock().expect("level nodes lock").insert(task.id.clone(), lock);
+                guard
+            });
             let emitter = emitter.clone();
             let outputs = outputs.clone();
             let this = self.clone();
@@ -1577,7 +1606,8 @@ impl TrackedRun {
             // node to settle.
             let id = task.id.clone();
             handles.push((id, tokio::spawn(async move {
-                let _permit = permits.acquire_owned().await.expect("semaphore closed");
+                let _owner = owner;
+                let _permit = this.permits.acquire().await.expect("semaphore closed");
                 match this.exec(&emitter, &task, ExecMode::FirstRun { outputs }).await {
                     Ok(()) => {
                         let st = emitter.snapshot();
@@ -1642,26 +1672,14 @@ impl TrackedRun {
     /// agent builds on it instead of proposing the graph still in its session.
     fn graph_context(&self) -> String {
         let value = self.canvas.lock().unwrap_or_else(|p| p.into_inner()).clone();
-        let Some(mut v) = value else { return String::new(); };
-        if let Some(tasks) = v.get_mut("tasks").and_then(|t| t.as_array_mut()) {
-            for t in tasks.iter_mut() {
-                if let Some(obj) = t.as_object_mut() {
-                    obj.remove("pos");
-                }
-            }
-        }
-        match serde_json::to_string_pretty(&v) {
-            Ok(json) => format!(
-                "\n\nТекущий граф на канвасе (оператор мог править его вручную — \
-                 переставить узлы, сменить модель, добавить зависимость). Опирайся на \
-                 него, а не на граф из истории, и верни полный обновлённый граф:\n\
-                 ```json\n{json}\n```"
-            ),
-            Err(_) => String::new(),
-        }
+        canvas_prompt(value)
     }
 
     pub async fn steer(&self, emitter: &Emitter, id: &str, text: &str, graph: Option<serde_json::Value>) -> Result<()> {
+        self.steer_with_context(emitter, id, text, graph, "").await
+    }
+
+    pub(crate) async fn steer_with_context(&self, emitter: &Emitter, id: &str, text: &str, graph: Option<serde_json::Value>, context: &str) -> Result<()> {
         install_death_handlers();
         let task = self.task(id).ok_or_else(|| anyhow!("no such task '{id}'"))?;
 
@@ -1683,7 +1701,7 @@ impl TrackedRun {
         // The transcript keeps the operator's words verbatim; only the model's
         // prompt gains the canvas block, so what the operator reads back stays
         // exactly what they typed.
-        let prompt = format!("{text}{}", self.graph_context());
+        let prompt = format!("{text}{}{context}", self.graph_context());
         let outcome = self
             .exec(emitter, &task, ExecMode::Resume(session.clone(), prompt))
             .await;
@@ -1738,6 +1756,7 @@ impl TrackedRun {
                 blockers.join(", ")
             ));
         }
+        let _permit = self.permits.acquire().await.expect("semaphore closed");
         // Drop the old session so FirstRun mints a new one.
         self.reset_node(emitter, id);
         let outputs = self.outputs_snapshot(emitter);
@@ -1833,7 +1852,7 @@ impl TrackedRun {
             for t in &ready {
                 self.reset_node(emitter, &t.id);
             }
-            self.run_level(emitter, ready.clone()).await;
+            self.run_level(emitter, ready.clone(), false).await;
             // Cascade Stale onto each refreshed node's dependents AFTER the
             // level is terminal (a dependent never shares a level with its
             // producer, so this is the same set the per-node `rerun` marks —
@@ -1905,14 +1924,29 @@ impl TrackedRun {
             let node = emitter.snapshot().nodes.get(&task.id).cloned();
             let Some(n) = node else { break };
 
+            // A failed summary must never replay the original task. The last
+            // attempt and its partial output are already in the manifest.
+            if matches!(mode, ExecMode::CoddySummary { .. }) && verdict != Verdict::Ok {
+                break;
+            }
             match verdict {
+                Verdict::CoddyStepLimit(steps) => {
+                    let Some(SessionRef::Coddy { sessions_dir, session_id }) = n.session else { break };
+                    if nudges_left == 0 { break; }
+                    nudges_left -= 1;
+                    emitter.append_turn(&task.id, Role::System, format!(
+                        "[watchdog] Coddy hit its limit of {steps} steps. Requesting the final report in the same session."
+                    ));
+                    mode = ExecMode::CoddySummary { sessions_dir, session_id };
+                    continue;
+                }
                 Verdict::Retry(reason) if retries_left > 0 => {
                     retries_left -= 1;
                     attempt_no += 1;
                     emitter.append_turn(
                         &task.id,
                         Role::System,
-                        format!("[watchdog] попытка не удалась ({reason}) — перезапуск с нуля, осталось {retries_left}"),
+                        format!("[watchdog] attempt failed ({reason}) — restarting from scratch, {retries_left} retries left"),
                     );
                     self.reset_node(emitter, &task.id);
                     mode = ExecMode::FirstRun { outputs: self.outputs_snapshot(emitter) };
@@ -1927,7 +1961,7 @@ impl TrackedRun {
                         &task.id,
                         Role::System,
                         format!(
-                            "[watchdog] вопрос в unattended-режиме, авто-ответ (осталось {auto_answers_left}):\n{}",
+                            "[watchdog] question in unattended mode, auto-answering ({auto_answers_left} auto-answers left):\n{}",
                             crate::watchdog::AUTO_ANSWER
                         ),
                     );
@@ -1953,7 +1987,7 @@ impl TrackedRun {
                         &task.id,
                         Role::System,
                         format!(
-                            "[watchdog] ответ выглядит незавершённым, подпинываю (осталось {nudges_left}):\n{}",
+                            "[watchdog] the reply looks unfinished, nudging ({nudges_left} nudges left):\n{}",
                             crate::watchdog::nudge_text(kind)
                         ),
                     );
@@ -2053,7 +2087,7 @@ impl TrackedRun {
                 &task.id,
                 Role::System,
                 format!(
-                    "[zori] предложение не прошло проверку — прошу исправить (раунд {}/{})",
+                    "[zori] the proposal failed validation — asking the model to fix it (round {}/{})",
                     prior_fix + 1,
                     crate::proposal::MAX_FIX_ROUNDS
                 ),
@@ -2086,7 +2120,7 @@ impl TrackedRun {
     }
 
     async fn wait_for_answers(&self, emitter: &Emitter, id: &str, timeout_secs: u64) -> Option<String> {
-        emitter.append_turn(id, Role::System, "[watchdog] ожидаю ответы оператора");
+        emitter.append_turn(id, Role::System, "[watchdog] waiting for the operator's answers");
         let deadline = tokio::time::Instant::now().checked_add(Duration::from_secs(timeout_secs));
         loop {
             // notify_waiters wakes all registered nodes. Register before checking
@@ -2195,6 +2229,7 @@ impl TrackedRun {
             let reply = match mode {
                 ExecMode::FirstRun { outputs } => render_prompt(task, &self.inputs, outputs, &ctx, None, skills.as_deref())?,
                 ExecMode::Resume(_, human) => human.clone(),
+                ExecMode::CoddySummary { .. } => unreachable!("summary belongs to a Coddy task"),
             };
             if supervision.is_some_and(|s| s.ask && !s.unattended) {
                 publish_questions(emitter, &task.id, &reply, &mut None);
@@ -2302,6 +2337,13 @@ impl TrackedRun {
                 // Reuse the stored session handle (context must persist).
                 (sp, Some(session.clone()), human.clone())
             }
+            ExecMode::CoddySummary { sessions_dir, session_id } => {
+                let prompt = crate::watchdog::CODDY_SUMMARY;
+                let mut sp = connectors::plan(&conn, task, prompt, flag_cwd.as_deref())?;
+                connectors::insert_track_args(&mut sp.argv, connectors::track_args(&conn, session_id, sessions_dir));
+                let session = SessionRef::Coddy { sessions_dir: sessions_dir.clone(), session_id: session_id.clone() };
+                (sp, Some(session), prompt.to_owned())
+            }
         };
 
         // The attempt's prompt: the rendered prompt on a first run, the human
@@ -2336,6 +2378,7 @@ impl TrackedRun {
         );
         env.extend(env_pairs(&conn, task));
 
+        let summarizing = matches!(mode, ExecMode::CoddySummary { .. });
         let out = spawn_captured(
             &sp.program,
             &sp.argv,
@@ -2346,7 +2389,7 @@ impl TrackedRun {
             timeout,
             &task.id,
             Some(emitter),
-            supervision.filter(|s| s.ask && !s.unattended && crate::watchdog::preamble_applies(&conn))
+            supervision.filter(|s| !summarizing && s.ask && !s.unattended && crate::watchdog::preamble_applies(&conn))
                 .map(|_| conn.id.clone()),
             &task.id,
         )
@@ -2356,6 +2399,7 @@ impl TrackedRun {
 
         // Turn the raw capture into (a) what flows downstream and (b) the
         // transcript line. Only assistant text from JSONL goes downstream.
+        let mut accepted_warning = None;
         let (agent_reply, final_reply, resolved_session, stream_error) = match conn.id.as_str() {
             "codex" => {
                 let mut ev = connectors::parse_codex_jsonl(&out.stdout);
@@ -2368,25 +2412,37 @@ impl TrackedRun {
             }
             "opencode" => {
                 let ev = connectors::parse_opencode_jsonl(&out.stdout);
-                let sess = ev.session_id.map(|session_id| SessionRef::Opencode { session_id });
-                let error = ev.error.or_else(|| ev.step_open.then(|| "OpenCode stream ended before step_finish".to_owned()));
                 let final_reply = ev.agent_texts[ev.final_step_start..].join("\n\n");
-                (ev.agent_texts.join("\n\n"), Some(final_reply), sess.or(harness_session), error)
+                let facts = Attempt { reply: &final_reply, success: out.success, timed_out: out.timed_out, exit_code: out.exit_code };
+                let accept = supervision.is_some_and(|s| s.ask || s.retry > 0 || s.nudges > 0)
+                    && crate::watchdog::accept_opencode_report(&facts, &ev);
+                let sess = ev.session_id.map(|session_id| SessionRef::Opencode { session_id });
+                if accept {
+                    accepted_warning = ev.late_input_error;
+                    (final_reply.clone(), Some(final_reply), sess.or(harness_session), None)
+                } else {
+                    let error = ev.error.or(ev.late_input_error).or_else(|| ev.step_open.then(|| "OpenCode stream ended before step_finish".to_owned()));
+                    (ev.agent_texts.join("\n\n"), Some(final_reply), sess.or(harness_session), error)
+                }
             }
             _ => (out.stdout.clone(), None, harness_session, None),
         };
         let facts = Attempt {
             reply: final_reply.as_deref().unwrap_or(&agent_reply),
-            success: out.success && !out.timed_out,
+            success: (out.success || accepted_warning.is_some()) && !out.timed_out,
             timed_out: out.timed_out,
             exit_code: out.exit_code,
         };
         // Arbitrary command harnesses can legitimately produce files and no stdout.
         let supervision = supervision.filter(|_| crate::watchdog::preamble_applies(&conn));
-        let verdict = match stream_error.as_ref() {
-            Some(reason) if !out.timed_out => Verdict::Retry(reason.clone()),
-            _ => attempt_verdict(&facts, supervision.filter(|_| supervise_failures), resumable(&resolved_session)),
+        let harness_verdict = match conn.id.as_str() {
+            "coddy" => crate::watchdog::coddy_verdict(&facts, &out.stderr, summarizing),
+            _ if !out.timed_out => stream_error.clone().map(Verdict::Retry),
+            _ => None,
         };
+        let verdict = harness_verdict.unwrap_or_else(|| {
+            attempt_verdict(&facts, supervision.filter(|_| supervise_failures), resumable(&resolved_session))
+        });
         let verdict = question_verdict(emitter, &task.id, verdict, resumable(&resolved_session), supervision.is_some_and(|s| s.unattended));
         // Review (minor): when the JSONL stream also broke at the moment the
         // timeout fired, only the timeout reached the operator — the truncated
@@ -2399,7 +2455,7 @@ impl TrackedRun {
                 reason.push_str(&format!("; stream also failed: {se}"));
             }
             Some(reason)
-        } else if !out.success && stream_error.is_none() {
+        } else if !facts.success && stream_error.is_none() {
             Some(out.exit_code.map(|c| format!("exited with code {c}"))
                 .unwrap_or_else(|| "killed by signal (no exit code)".into()))
         } else {
@@ -2414,6 +2470,8 @@ impl TrackedRun {
             format!("{head}\n{}", out.stderr)
         } else if let Some(reason) = &fail_reason {
             format!("{reason}\n{}", out.stderr)
+        } else if let Some(warning) = &accepted_warning {
+            format!("{warning}\n{}", out.stderr)
         } else {
             out.stderr.clone()
         };
@@ -2424,6 +2482,11 @@ impl TrackedRun {
                     n.session = resolved_session.clone();
                 }
                 n.turns.push(crate::state::Turn { role: Role::Agent, text: agent_reply.clone(), ts: now_secs() });
+                if let Some(warning) = &accepted_warning {
+                    n.turns.push(crate::state::Turn { role: Role::System,
+                        text: format!("[watchdog] Final answer accepted. OpenCode reported after the step finished: {warning}"),
+                        ts: now_secs() });
+                }
                 n.output = agent_reply.clone();
                 n.stderr = stderr_final.clone();
                 n.exit_code = out.exit_code;
@@ -2439,7 +2502,7 @@ impl TrackedRun {
         let ended_at = now_secs();
         let _ = tokio::fs::write(attempt_dir.join("out.txt"), &agent_reply).await;
         let _ = tokio::fs::write(attempt_dir.join("err.txt"), &stderr_final).await;
-        if fail_reason.is_some() && matches!(conn.id.as_str(), "codex" | "opencode") {
+        if (fail_reason.is_some() || accepted_warning.is_some()) && matches!(conn.id.as_str(), "codex" | "opencode") {
             let _ = tokio::fs::write(attempt_dir.join("stdout.log"), &out.stdout).await;
         }
         let session = emitter
@@ -2487,6 +2550,26 @@ impl TrackedRun {
     }
 }
 
+pub(crate) fn canvas_prompt(value: Option<serde_json::Value>) -> String {
+    let Some(mut v) = value else { return String::new(); };
+    if let Some(tasks) = v.get_mut("tasks").and_then(|t| t.as_array_mut()) {
+        for t in tasks.iter_mut() {
+            if let Some(obj) = t.as_object_mut() {
+                obj.remove("pos");
+            }
+        }
+    }
+    match serde_json::to_string_pretty(&v) {
+        Ok(json) => format!(
+            "\n\nThe current graph on the canvas (the operator may have edited it by hand — \
+             moved nodes, changed a model, added a dependency). Rely on it when discussing and \
+             changing the graph:\n\
+             ```json\n{json}\n```"
+        ),
+        Err(_) => String::new(),
+    }
+}
+
 fn publish_questions(emitter: &Emitter, id: &str, text: &str, fence: &mut Option<char>) {
     for mut question in text.lines().filter_map(|l| crate::watchdog::protocol_line(l, fence))
         .filter_map(crate::watchdog::question_line) {
@@ -2502,7 +2585,7 @@ fn publish_questions(emitter: &Emitter, id: &str, text: &str, fence: &mut Option
 }
 
 fn question_verdict(emitter: &Emitter, id: &str, verdict: Verdict, can_resume: bool, unattended: bool) -> Verdict {
-    if matches!(verdict, Verdict::Retry(_)) { return verdict; }
+    if matches!(verdict, Verdict::Retry(_) | Verdict::Incomplete) { return verdict; }
     if let Some(q) = emitter.snapshot().nodes[id].questions.iter().find(|q| !q.closed) {
         if can_resume { return Verdict::Ask(q.text.clone()); }
         return Verdict::Retry("operator question without a resumable session".into());
@@ -2535,6 +2618,8 @@ fn attempt_verdict(facts: &Attempt, settings: Option<&Settings>, can_resume: boo
 
 fn verdict_failure(verdict: &Verdict) -> Option<String> {
     match verdict {
+        Verdict::CoddyStepLimit(n) => Some(format!("Coddy reached agent.max_turns ({n} steps)")),
+        Verdict::Incomplete => Some("Coddy summary reports unfinished work".into()),
         Verdict::Nudge(kind) => Some(format!("watchdog: unfinished reply ({kind:?})")),
         Verdict::Retry(reason) => Some(reason.clone()),
         _ => None,
@@ -2547,7 +2632,7 @@ fn verdict_failure(verdict: &Verdict) -> Option<String> {
 fn mode_nonce(mode: &ExecMode, attempt: u32) -> String {
     match mode {
         ExecMode::FirstRun { .. } => format!("r{attempt}"),
-        ExecMode::Resume(..) => format!("t{}", now_secs()),
+        ExecMode::Resume(..) | ExecMode::CoddySummary { .. } => format!("t{}", now_secs()),
     }
 }
 
@@ -2979,6 +3064,114 @@ mod tracked_tests {
     }
 
     #[tokio::test]
+    async fn finished_opencode_report_reaches_the_join_on_first_attempt() {
+        let dir = std::env::temp_dir().join(artifacts::new_run_id("zori-opencode-report"));
+        let flow: Flow = serde_yaml::from_str(r#"
+name: report
+harnesses:
+  opencode:
+    command:
+      - /bin/sh
+      - -c
+      - |
+        cat <<'EVENTS'
+        {"type":"step_start","sessionID":"sid"}
+        {"type":"text","part":{"type":"text","text":"Getting started"}}
+        {"type":"step_finish","part":{"reason":"tool-calls"}}
+        {"type":"step_start","sessionID":"sid"}
+        {"type":"text","part":{"type":"text","text":"Final research report"}}
+        {"type":"step_finish","part":{"reason":"stop"}}
+        {"type":"error","error":{"message":"Cancelled a request for input this run cannot answer: Web Search"}}
+        EVENTS
+        exit 1
+tasks:
+  - { id: science, harness: opencode, in: Research }
+  - { id: summary, harness: echo, in: Summarize, depends_on: [science] }
+"#).unwrap();
+        let (tr, em) = supervised_fixture(&dir, flow).await;
+        tr.run_all(&em).await;
+        let state = em.snapshot();
+        let science = &state.nodes["science"];
+        assert_eq!(science.status, TaskStatus::Done);
+        assert_eq!(science.exit_code, Some(1));
+        assert_eq!(science.output, "Final research report");
+        assert!(science.stderr.contains("Web Search"));
+        assert_eq!(state.nodes["summary"].status, TaskStatus::Done);
+        assert!(state.nodes["summary"].output.contains(&science.output));
+        let manifest: artifacts::Manifest = serde_json::from_slice(
+            &std::fs::read(dir.join("run/manifest.json")).unwrap()).unwrap();
+        let attempts = &manifest.tasks["science"].attempts;
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(attempts["r0"].status, "done");
+        assert_eq!(attempts["r0"].exit_code, Some(1));
+        assert!(dir.join("run/tasks/science/r0/stdout.log").is_file());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn coddy_step_cap_requests_one_summary_before_releasing_dependents() {
+        let script = r#"
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -p) prompt=$2; shift ;;
+        -session-id) session=$2; shift ;;
+        -sessions-dir) sessions_dir=$2; shift ;;
+    esac
+    shift
+done
+if [ -f session ]; then
+    test "$(cat session)" = "$sessions_dir/$session" || exit 7
+    case "$prompt" in *ZORI_INCOMPLETE*) ;; *) exit 8 ;; esac
+    case "$SUMMARY" in
+        ok) echo 'final report'; exit 0 ;;
+        partial) printf 'ZORI_INCOMPLETE\nTests still pending\n'; exit 0 ;;
+        crash) exit 9 ;;
+    esac
+fi
+echo "$sessions_dir/$session" > session
+echo 'I have edited the file and will run tests.'
+echo 'Stopped after 165 steps, the step limit set by agent.max_turns. The task may be unfinished: send a message to let the agent continue, or raise the limit.' >&2
+"#;
+        for (summary, nudges) in [("ok", 1), ("partial", 2), ("cap_again", 2), ("crash", 2), ("off", 0)] {
+            let dir = std::env::temp_dir().join(artifacts::new_run_id("coddy-step-limit"));
+            let mut flow: Flow = serde_yaml::from_str(r#"
+name: step-limit
+tasks:
+  - {id: a, harness: coddy, in: implement}
+  - {id: b, harness: echo, in: report, depends_on: [a]}
+"#).unwrap();
+            flow.tasks[0].env.insert("SUMMARY".into(), summary.into());
+            flow.watchdog = Some(crate::config::Watchdog { nudges: Some(nudges), ..Default::default() });
+            flow.harnesses.insert("coddy".into(), crate::config::HarnessOverride {
+                command: Some(vec!["sh".into(), "-c".into(), script.into(), "coddy".into()]),
+                ..Default::default()
+            });
+            let (tr, em) = supervised_fixture(&dir, flow).await;
+            tr.run_all(&em).await;
+            let state = em.snapshot();
+            if summary == "ok" {
+                assert_eq!(state.nodes["a"].status, TaskStatus::Done);
+                assert!(state.nodes["b"].output.contains("final report"));
+                assert!(!state.nodes["b"].output.contains("will run tests"));
+            } else {
+                assert_eq!(state.nodes["a"].status, TaskStatus::Failed, "{summary}");
+                assert_eq!(state.nodes["b"].status, TaskStatus::Skipped);
+                if summary == "partial" {
+                    assert!(state.nodes["a"].output.contains("Tests still pending"));
+                }
+            }
+            let manifest: artifacts::Manifest = serde_json::from_slice(
+                &std::fs::read(dir.join("run/manifest.json")).unwrap()).unwrap();
+            let attempts = &manifest.tasks["a"].attempts;
+            assert_eq!(attempts["r0"].exit_code, Some(0));
+            assert!(attempts["r0"].error.as_deref().unwrap().contains("165"));
+            assert_eq!(attempts.len(), if nudges == 0 { 1 } else { 2 });
+            assert!(!attempts.contains_key("r1"));
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[tokio::test]
     async fn inline_questions_arrive_live_and_resume_with_every_answer() {
         let dir = std::env::temp_dir().join(artifacts::new_run_id("zori-inline"));
         let gate = dir.join("finish-turn");
@@ -2990,16 +3183,16 @@ done
 echo '{"type":"thread.started","thread_id":"my-session"}'
 if [ "$resumed" = yes ]; then
     case "$last" in
-        *"Формат? — CSV"*"Версия? — вторая"*) ;;
+        *"Format? — CSV"*"Version? — second"*) ;;
         *) exit 4 ;;
     esac
-    echo '{"type":"item.completed","item":{"type":"agent_message","text":"Готово"}}'
+    echo '{"type":"item.completed","item":{"type":"agent_message","text":"Done"}}'
 else
     echo '{"type":"item.completed","item":{"type":"command_execution","text":"ASK_INLINE: tool noise"}}'
-    echo '{"type":"item.completed","item":{"type":"agent_message","text":"ASK_INLINE: {\"question\":\"Формат?\",\"options\":[\"CSV\",\"JSON\"]}"}}'
-    echo '{"type":"item.completed","item":{"type":"agent_message","text":"ASK_INLINE: Версия?"}}'
+    echo '{"type":"item.completed","item":{"type":"agent_message","text":"ASK_INLINE: {\"question\":\"Format?\",\"options\":[\"CSV\",\"JSON\"]}"}}'
+    echo '{"type":"item.completed","item":{"type":"agent_message","text":"ASK_INLINE: Version?"}}'
     while [ ! -e "$GATE" ]; do sleep 0.02; done
-    echo '{"type":"item.completed","item":{"type":"agent_message","text":"Закончил независимую часть"}}'
+    echo '{"type":"item.completed","item":{"type":"agent_message","text":"Finished the independent part"}}'
 fi
 echo '{"type":"turn.completed"}'
 "#;
@@ -3028,7 +3221,7 @@ echo '{"type":"turn.completed"}'
             let q = &live.nodes["a"].questions;
             assert_eq!(live.nodes["a"].status, TaskStatus::Running);
             assert_eq!(q[0].options, ["CSV", "JSON"]);
-            tr.answer_question(&em, "a", Some(q[1].id), "вторая", None).unwrap();
+            tr.answer_question(&em, "a", Some(q[1].id), "second", None).unwrap();
             assert!(tr.answer_question(&em, "a", Some(q[1].id), "duplicate", None).is_err());
             std::fs::write(&gate, "").unwrap();
             while em.snapshot().nodes["a"].status != TaskStatus::Waiting {
@@ -3036,7 +3229,7 @@ echo '{"type":"turn.completed"}'
             }
             // A subscriber arriving after the stream events still gets the pending question.
             let snap = em.snapshot();
-            assert_eq!(snap.nodes["a"].questions[1].answer.as_deref(), Some("вторая"));
+            assert_eq!(snap.nodes["a"].questions[1].answer.as_deref(), Some("second"));
             assert_eq!(snap.nodes["b"].status, TaskStatus::Pending);
             tr.answer_question(&em, "a", Some(q[0].id), "CSV", None).unwrap();
         };
@@ -3044,7 +3237,7 @@ echo '{"type":"turn.completed"}'
             tokio::join!(tr.run_all(&em), operator);
         }).await.unwrap();
         let final_state = em.snapshot();
-        assert_eq!(final_state.nodes["a"].output, "Готово");
+        assert_eq!(final_state.nodes["a"].output, "Done");
         assert!(final_state.nodes["a"].questions.iter().all(|q| q.closed));
         assert_eq!(final_state.nodes["b"].status, TaskStatus::Done);
         std::fs::remove_dir_all(dir).unwrap();
@@ -3103,7 +3296,7 @@ echo '{"type":"turn.completed"}'
                 // echo replies with its prompt → the reply carries the
                 // clip marker → verdict Nudge → resume with the nudge
                 // text → echo replies with THAT (clean) → Done.
-                in_field: "работаю\n<response clipped>".into(),
+                in_field: "working\n<response clipped>".into(),
                 ..echo_task("a", &[])
             }],
         };
@@ -3115,7 +3308,7 @@ echo '{"type":"turn.completed"}'
         let roles: Vec<Role> = s.nodes["a"].turns.iter().map(|t| t.role).collect();
         assert_eq!(roles, vec![Role::Agent, Role::System, Role::Agent], "nudge is a system turn");
         assert!(s.nodes["a"].turns[1].text.contains("[watchdog]"), "{}", s.nodes["a"].turns[1].text);
-        assert!(s.nodes["a"].output.contains("оборвался"), "final output is the nudge reply");
+        assert!(s.nodes["a"].output.contains("cut off"), "final output is the nudge reply");
 
         let manifest: artifacts::Manifest = serde_json::from_str(
             &std::fs::read_to_string(dir.join("run/manifest.json")).unwrap(),
@@ -3145,7 +3338,7 @@ echo '{"type":"turn.completed"}'
             max_parallel: Some(1),
             watchdog: None,
             tasks: vec![
-                Task { in_field: "начинаю\nASK: какой формат отчёта?".into(), ..echo_task("a", &[]) },
+                Task { in_field: "starting\nASK: which report format?".into(), ..echo_task("a", &[]) },
                 echo_task("b", &["a"]),
             ],
         };
@@ -3169,19 +3362,19 @@ echo '{"type":"turn.completed"}'
         })
         .await
         .expect("node parks on ASK");
-        assert_eq!(parked.nodes["a"].ask.as_deref(), Some("ASK: какой формат отчёта?"));
+        assert_eq!(parked.nodes["a"].ask.as_deref(), Some("ASK: which report format?"));
         assert_eq!(parked.nodes["b"].status, TaskStatus::Pending, "barrier holds the dependent");
         assert_eq!(parked.status, crate::state::RunStatus::Running);
 
         // Answer from the "operator": the human turn lands, the session
         // resumes with the answer text (echo replies with it) → Done → b runs.
-        tr.answer(&em, "a", "формат — короткий список").await.unwrap();
+        tr.answer(&em, "a", "format: a short list").await.unwrap();
         driver.await.unwrap();
 
         let s = em.snapshot();
         assert_eq!(s.nodes["a"].status, TaskStatus::Done);
         assert_eq!(s.nodes["a"].ask, None, "question cleared");
-        assert_eq!(s.nodes["a"].output, "формат — короткий список");
+        assert_eq!(s.nodes["a"].output, "format: a short list");
         let roles: Vec<Role> = s.nodes["a"].turns.iter().map(|t| t.role).collect();
         assert_eq!(roles, vec![Role::Agent, Role::System, Role::Human, Role::Agent], "{roles:?}");
         assert_eq!(s.nodes["b"].status, TaskStatus::Done, "dependent ran after the answer");
@@ -3207,7 +3400,7 @@ echo '{"type":"turn.completed"}'
                 unattended: Some(true),
                 ..Default::default()
             }),
-            tasks: vec![Task { in_field: "спрашиваю\nASK: что делать?".into(), ..echo_task("a", &[]) }],
+            tasks: vec![Task { in_field: "asking\nASK: what should I do?".into(), ..echo_task("a", &[]) }],
         };
         let (tr, em) = supervised_fixture(&dir, flow).await;
         tr.run_all(&em).await;
@@ -3216,7 +3409,7 @@ echo '{"type":"turn.completed"}'
         assert_eq!(s.nodes["a"].status, TaskStatus::Done, "no parking overnight");
         assert_eq!(s.nodes["a"].ask, None);
         let sys: Vec<&str> = s.nodes["a"].turns.iter().filter(|t| t.role == Role::System).map(|t| t.text.as_str()).collect();
-        assert!(sys.iter().any(|t| t.contains("авто-ответ")), "{sys:?}");
+        assert!(sys.iter().any(|t| t.contains("auto-answering")), "{sys:?}");
         assert_eq!(s.nodes["a"].output, crate::watchdog::AUTO_ANSWER, "echo replied with the canned answer");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -3247,7 +3440,7 @@ echo '{"type":"turn.completed"}'
             watchdog: None, // defaults: retry 1
             tasks: vec![Task {
                 harness: "always-false".into(),
-                in_field: "сделай что-нибудь".into(),
+                in_field: "do something".into(),
                 ..echo_task("a", &[])
             }],
         };
@@ -3299,7 +3492,7 @@ echo '{"type":"turn.completed"}'
             cwd: None,
             default_timeout_secs: Some(20),
             max_parallel: Some(1),
-            tasks: vec![Task { harness: "exit3".into(), in_field: "работай".into(), ..echo_task("a", &[]) }],
+            tasks: vec![Task { harness: "exit3".into(), in_field: "get to work".into(), ..echo_task("a", &[]) }],
         };
         let (tr, em) = supervised_fixture(&dir, flow).await;
         tr.run_all(&em).await;
@@ -3395,7 +3588,7 @@ echo '{"type":"turn.completed"}'
                 ..Default::default()
             }),
             tasks: vec![
-                Task { in_field: "ASK: ну что?".into(), ..echo_task("a", &[]) },
+                Task { in_field: "ASK: so what?".into(), ..echo_task("a", &[]) },
                 echo_task("b", &["a"]),
             ],
         };
@@ -3427,7 +3620,7 @@ echo '{"type":"turn.completed"}'
             default_timeout_secs: Some(20),
             max_parallel: Some(1),
             tasks: vec![
-                Task { harness: "prompt".into(), in_field: "Общий текст задания".into(), ..echo_task("prompt", &[]) },
+                Task { harness: "prompt".into(), in_field: "Shared task text".into(), ..echo_task("prompt", &[]) },
                 Task { depends_on: vec!["prompt".into()], ..echo_task("worker", &["prompt"]) },
             ],
         };
@@ -3447,11 +3640,11 @@ echo '{"type":"turn.completed"}'
         tr.run_all(&em).await;
         let s = em.snapshot();
         assert_eq!(s.nodes["prompt"].status, TaskStatus::Done);
-        assert_eq!(s.nodes["prompt"].output, "Общий текст задания");
+        assert_eq!(s.nodes["prompt"].output, "Shared task text");
         assert_eq!(s.nodes["worker"].status, TaskStatus::Done);
         // The worker's echo reply is its prompt: `in` + the fed section.
         assert!(
-            s.nodes["worker"].output.contains("# prompt\nОбщий текст задания"),
+            s.nodes["worker"].output.contains("# prompt\nShared task text"),
             "dep edge fed the prompt text: {:?}",
             s.nodes["worker"].output
         );
@@ -3625,7 +3818,7 @@ echo '{"type":"turn.completed"}'
         // The console's fix-and-rerun loop: a task registered via
         // override_task must be what the next rerun executes — not the
         // boot-time spec. This is the "typo'd model, node failed, fixed it in
-        // Конфиг" path; modelled here on the prompt, which echo echoes back.
+        // Config" path; modelled here on the prompt, which echo echoes back.
         let dir = std::env::temp_dir().join(format!("zori-trk-ovr-{}", now_secs()));
         let (tr, em) = tracked_fixture(&dir).await;
         tr.run_all(&em).await;
@@ -3917,7 +4110,7 @@ echo '{"type":"turn.completed"}'
     }
 
     const VALID_GRAPH: &str =
-        "вот согласованный граф:\n```zori-flow\nname: ok\ntasks:\n  - id: a\n    harness: echo\n    in: hi\n```";
+        "here is the agreed graph:\n```zori-flow\nname: ok\ntasks:\n  - id: a\n    harness: echo\n    in: hi\n```";
     const VALID_GRAPH_V2: &str =
         "```zori-flow\nname: ok\ntasks:\n  - id: a\n    harness: echo\n    in: hi\n  - id: b\n    harness: echo\n    in: yo\n    depends_on: [a]\n```";
     const BAD_GRAPH: &str =
@@ -4014,7 +4207,7 @@ echo '{"type":"turn.completed"}'
             s.nodes["chat"]
                 .turns
                 .iter()
-                .any(|t| t.role == Role::System && t.text.contains("не прошло")),
+                .any(|t| t.role == Role::System && t.text.contains("failed validation")),
             "a system turn announces the repair"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -4057,7 +4250,7 @@ echo '{"type":"turn.completed"}'
     async fn gate_ignores_a_reply_without_a_block() {
         let dir = std::env::temp_dir().join(format!("zori-gate-none-{}", now_secs()));
         let (tr, em, task) = chat_gate_fixture(&dir).await;
-        set_chat_reply(&em, "давай сначала обсудим план: шаг 1, затем шаг 2");
+        set_chat_reply(&em, "let's discuss the plan first: step 1, then step 2");
         let fix = tr.proposal_gate(&em, &task).await;
         assert!(fix.is_none(), "a plain conversational turn is not a proposal");
         let s = em.snapshot();
@@ -4288,12 +4481,12 @@ mod tests {
 
         let t = Task {
             skills: vec![],
-            in_field: "Сделай ревью".into(),
+            in_field: "Do a review".into(),
             depends_on: vec!["a".into(), "b".into()],
             ..plain_task("join")
         };
         let p = render_prompt(&t, &HashMap::new(), &outputs, &ctx, None, None).unwrap();
-        assert!(p.contains("Сделай ревью\n\n# a\nA-OUT\n\n# b\nB-OUT"), "sections appended in dep order: {p:?}");
+        assert!(p.contains("Do a review\n\n# a\nA-OUT\n\n# b\nB-OUT"), "sections appended in dep order: {p:?}");
 
         // Referenced deps keep their hand-placed position, no duplicate.
         let t = Task {
@@ -4319,20 +4512,20 @@ mod tests {
     fn preamble_section_rides_after_output() {
         let t = Task {
             skills: vec![],
-            in_field: "сделай ревью".into(),
-            out: Some("короткий отчёт".into()),
+            in_field: "do a review".into(),
+            out: Some("a short report".into()),
             ..plain_task("join")
         };
-        let pre = "НАБОР ПРАВИЛ ПРОТОКОЛА";
+        let pre = "PROTOCOL RULESET";
         let p = render_prompt(&t, &HashMap::new(), &HashMap::new(), &PromptCtx::default(), Some(pre), None).unwrap();
         let out_at = p.find("# Output").expect("output section present");
         let pre_at = p.find(pre).expect("preamble present");
         assert!(pre_at > out_at, "protocol after the output spec: {p:?}");
-        assert!(p.ends_with("НАБОР ПРАВИЛ ПРОТОКОЛА\n"), "trimmed and terminated: {p:?}");
+        assert!(p.ends_with("PROTOCOL RULESET\n"), "trimmed and terminated: {p:?}");
 
         // None → no section at all (byte-exact prompts stay byte-exact).
         let bare = render_prompt(&t, &HashMap::new(), &HashMap::new(), &PromptCtx::default(), None, None).unwrap();
-        assert!(!bare.contains("ПРОТОКОЛА"));
+        assert!(!bare.contains("PROTOCOL RULESET"));
     }
 
     /// A skill block rides AFTER the dependency sections (it is context about
@@ -4345,13 +4538,13 @@ mod tests {
         outputs.insert("a".to_string(), "A-OUT".to_string());
         let t = Task {
             skills: vec![],
-            in_field: "сделай".into(),
+            in_field: "do it".into(),
             depends_on: vec!["a".into()],
-            out: Some("отчёт".into()),
+            out: Some("report".into()),
             ..plain_task("join")
         };
-        let sk = "# Skill: review\nСмотри на границы";
-        let pre = "ПРОТОКОЛ";
+        let sk = "# Skill: review\nLook at the boundaries";
+        let pre = "PROTOCOL";
         let p = render_prompt(&t, &HashMap::new(), &outputs, &PromptCtx::default(), Some(pre), Some(sk)).unwrap();
         let dep_at = p.find("# a\nA-OUT").expect("dep section");
         let skill_at = p.find("# Skill: review").expect("skill section");
@@ -4392,20 +4585,20 @@ mod tests {
             inputs: BTreeMap::new(),
             harnesses,
             tasks: vec![
-                Task { harness: "prompt".into(), in_field: "Нужно провести ревью проекта".into(), ..plain_task("prompt") },
-                Task { harness: "catting".into(), in_field: "Ты ревьюер.".into(), depends_on: vec!["prompt".into()], ..plain_task("worker") },
+                Task { harness: "prompt".into(), in_field: "The project needs a review".into(), ..plain_task("prompt") },
+                Task { harness: "catting".into(), in_field: "You are a reviewer.".into(), depends_on: vec!["prompt".into()], ..plain_task("worker") },
             ],
         };
         let p = plan(&flow).expect("plan");
         let report = run(&flow, &p, &[], &root).await.expect("run ok");
         assert_eq!(report.succeeded(), 2, "both nodes done");
-        assert_eq!(report.results["prompt"].output, "Нужно провести ревью проекта");
+        assert_eq!(report.results["prompt"].output, "The project needs a review");
         let fed = &report.results["worker"].output;
-        assert!(fed.contains("Ты ревьюер.\n\n# prompt\nНужно провести ревью проекта"), "worker saw the fed section: {fed:?}");
+        assert!(fed.contains("You are a reviewer.\n\n# prompt\nThe project needs a review"), "worker saw the fed section: {fed:?}");
         // The prompt node recorded an attempt like any harness.
         let run_dir = report.out_dir.unwrap();
         let out = std::fs::read_to_string(run_dir.join("tasks/prompt/r0/out.txt")).unwrap();
-        assert_eq!(out, "Нужно провести ревью проекта");
+        assert_eq!(out, "The project needs a review");
         let _ = std::fs::remove_dir_all(&root);
     }
 

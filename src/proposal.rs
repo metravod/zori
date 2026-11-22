@@ -48,10 +48,10 @@ pub const MAX_FIX_ROUNDS: u32 = 2;
 /// so the wording is unit-testable and the runner stays thin.
 pub fn fix_instruction(errors: &[String]) -> String {
     let mut s = String::from(
-        "Твой блок ```zori-flow не прошёл проверку zori. Исправь и выдай ПОЛНЫЙ \
-         исправленный граф заново, одним блоком ```zori-flow (не фрагмент и не \
-         комментарий — целиком). Ничего не сохраняй и не запускай: файл кладёт и \
-         запуск делает оператор. Ошибки проверки:\n",
+        "Your ```zori-flow block failed zori's validation. Fix it and emit the FULL corrected \
+         graph again, as one ```zori-flow block (not a fragment and not a comment — the whole \
+         thing). Save and run nothing: the operator saves the file and starts the run. \
+         Validation errors:\n",
     );
     for e in errors {
         s.push_str("- ");
@@ -232,7 +232,7 @@ pub fn validate(yaml: &str) -> Proposal {
                 raw,
                 hash,
                 valid: false,
-                errors: vec![format!("flow YAML не разобран: {e}")],
+                errors: vec![format!("flow YAML failed to parse: {e}")],
                 warnings: Vec::new(),
                 levels: Vec::new(),
                 spec: None,
@@ -281,7 +281,7 @@ pub fn from_reply(reply: &str) -> Option<Proposal> {
             hash: content_hash(""),
             valid: false,
             errors: vec![format!(
-                "предложение слишком большое: {bytes} байт (максимум {MAX_PROPOSAL_BYTES}) — предложи более компактный граф"
+                "proposal too large: {bytes} bytes (maximum {MAX_PROPOSAL_BYTES}) — propose a more compact graph"
             )],
             warnings: Vec::new(),
             levels: Vec::new(),
@@ -331,13 +331,13 @@ pub fn content_hash(s: &str) -> String {
 pub fn harness_brief() -> Option<String> {
     use crate::connectors;
     let mut rows: Vec<String> = Vec::new();
-    for id in connectors::builtin_ids() {
+    for id in connectors::all_ids() {
         // Skip the non-agent harnesses from the planner's view: they are data
         // plumbing (`prompt`) and smoke tests (`echo`), not agents to plan with.
-        if matches!(*id, "echo" | "prompt") {
+        if matches!(id.as_str(), "echo" | "prompt") {
             continue;
         }
-        let Ok(conn) = connectors::resolve(id, None) else {
+        let Ok(conn) = connectors::resolve(&id, None) else {
             continue;
         };
         if !conn.is_agent {
@@ -350,29 +350,30 @@ pub fn harness_brief() -> Option<String> {
             .unwrap_or(false);
         if !installed {
             rows.push(format!(
-                "- **{id}** — НЕ установлен на этой машине (бинарь «{}» не найден). Не используй этот харнесс.",
-                conn.command.first().map(String::as_str).unwrap_or(id)
+                "- **{id}** — NOT installed on this machine (binary \"{}\" not found). Do not use this harness.",
+                conn.command.first().map(String::as_str).unwrap_or(id.as_str())
             ));
             continue;
         }
         let model = if conn.supports_model {
-            "модель за прогон: да"
+            "per-run model: yes"
         } else {
-            "модель за прогон: НЕТ (не ставь `model:`)"
+            "per-run model: NO (do not set `model:`)"
         };
         let steer = if connectors::steerable(&conn) {
-            "можно доводить ходы"
+            "steerable mid-run"
         } else {
-            "без доведения"
+            "not steerable"
         };
-        rows.push(format!("- **{id}** — установлен; {model}; {steer}."));
+        rows.push(format!("- **{id}** — installed; {model}; {steer}."));
     }
     if rows.is_empty() {
         return None;
     }
     Some(format!(
-        "# Харнессы на этой машине\n\n\
-         Реальное состояние CLI-агентов (сверь с ним `harness:`/`model:`, выдуманный харнесс или модель уронят узел):\n{}",
+        "# Harnesses on this machine\n\n\
+         The real state of the CLI agents (match `harness:`/`model:` against it; an invented \
+         harness or model will kill the node):\n{}",
         rows.join("\n")
     ))
 }
@@ -383,8 +384,8 @@ mod tests {
 
     #[test]
     fn extract_grabs_the_last_zori_flow_block() {
-        let reply = "вот черновик:\n```yaml\nname: wrong\n```\n\
-                     а вот готовый:\n```zori-flow\nname: ok\ntasks:\n  - id: a\n    harness: echo\n    in: hi\n```\n";
+        let reply = "here is a draft:\n```yaml\nname: wrong\n```\n\
+                     and here is the final one:\n```zori-flow\nname: ok\ntasks:\n  - id: a\n    harness: echo\n    in: hi\n```\n";
         assert_eq!(
             extract(reply).as_deref(),
             Some("name: ok\ntasks:\n  - id: a\n    harness: echo\n    in: hi")
@@ -393,7 +394,7 @@ mod tests {
 
     #[test]
     fn extract_is_none_without_a_tagged_block() {
-        assert!(extract("просто текст, без блока").is_none());
+        assert!(extract("just text, no block").is_none());
         assert!(extract("```yaml\nname: x\n```\n").is_none(), "plain yaml is not a proposal");
     }
 
@@ -481,7 +482,7 @@ mod tests {
         assert!(!p.valid);
         assert!(p.raw.is_empty(), "the megabyte must not be kept as raw");
         assert!(
-            p.errors[0].contains("слишком большое") && p.errors[0].contains("максимум"),
+            p.errors[0].contains("too large") && p.errors[0].contains("maximum"),
             "the error must name the size and the cap: {:?}",
             p.errors[0]
         );

@@ -49,11 +49,11 @@ zori ui --bind 127.0.0.1:9000 --runs-root zori-runs --flows-root zori-flows
 every prior run under `--runs-root` (`zori-runs`). It binds local-only by
 default and has **no auth**, so keep `--bind` on `127.0.0.1` unless you front it
 yourself. `--flows-root` (`zori-flows`, created if missing) is the directory
-**⤓ Шаблон** writes saved pipelines to and the **Пайплайны** dropdown reads back.
+**⤓ Template** writes saved pipelines to and the **Pipelines** dropdown reads back.
 
 Each block on the canvas represents one task. Open a block for its starting prompt, transcript and configuration. The status indicator follows the attached run. Pan the canvas by dragging its background and use the zoom or fit controls to bring a branch into view.
 
-After a turn finishes, send a follow-up in the task's chat to resume the same Coddy, Codex or OpenCode session. A changed output marks downstream tasks stale. Rerun one of those tasks, or rerun the stale part of the graph. If a task failed, you can correct its prompt, model or other execution settings before retrying. Save a new flow to change task IDs or dependencies.
+After a turn finishes, send a follow-up in the task's chat to resume the same Coddy, Codex or OpenCode session. A changed output marks downstream tasks stale. Rerun one of those tasks, or rerun the stale part of the graph. If a task fails while its siblings are still running, edit its model or prompt in **Config**, then click **▶** on the block or **⟳ Rerun** in the inspector. The next level waits for the retry and uses its new output. Save a new flow to change task IDs or dependencies.
 
 The console persists run state on disk and reloads it after a restart. Use the run selector to return to a previous conversation or inspect an earlier attempt.
 
@@ -63,10 +63,23 @@ The console supervises first
 runs, reruns and their automatic follow-ups. A manual chat steer runs once. Classic `zori run` executes each task once.
 
 - **An unfinished reply** (the `<response clipped` marker, empty assistant text,
-  or an entire reply consisting of placeholders such as «Продолжаю…») is **nudged**: the *same* session is resumed with a message that
+  or an entire reply consisting of placeholders such as "Continuing…") is **nudged**: the *same* session is resumed with a message that
   orders the model to stop working and produce the final answer now — a naive
   "continue" would feed the very loop that killed the node.
   If the last nudge also yields an unfinished reply, the node fails.
+- **Coddy's step limit** applies to one turn. Coddy can exit successfully
+  with a progress report on stdout and an `agent.max_turns` notice on stderr.
+  With a nudge available, Zori asks the same session once for the requested
+  result using its existing history. The prompt asks Coddy to report completed
+  work and checks, and to flag outstanding work with `ZORI_INCOMPLETE`.
+  An unfinished or failed summary leaves the node failed and its transcript
+  available for manual continuation. With no nudges left, the original
+  partial report is retained as a failed attempt.
+- **OpenCode can finish a report after a tool requested interactive input.**
+  If its final step closes with `stop` and OpenCode subsequently reports the
+  cancelled input request, the watchdog checks the final step's text. A usable
+  reply goes downstream immediately. The attempt retains the original exit
+  code, diagnostic and raw stream, and the node chat records the decision.
 - **A failed attempt** (timeout, non-zero exit, a Codex/OpenCode stream error,
   an interrupted model turn, or a standalone diagnostic such as `connection lost` or
   `usage limit exceeded`) is **retried from
@@ -81,7 +94,7 @@ runs, reruns and their automatic follow-ups. A manual chat steer runs once. Clas
   during this turn. Either prefix accepts plain text or a single-line payload
   such as `ASK_INLINE: {"question":"Report format?","options":["CSV","JSON"]}`.
   Choose an option or enter a free-text answer in the node chat or the attached
-  run's **Вопросы** menu. The tab title flags pending questions.
+  run's **Questions** menu. The tab title flags pending questions.
 - At the end of the turn, the node waits for **all** outstanding answers.
   Replies can arrive in any order. Zori passes them together on the next turn
   of the same session. The normal level barrier holds during the wait.
@@ -124,19 +137,17 @@ unanswered question on a waiting node. Each ID accepts one answer.
 
 ### Start a prompt or a model chat
 
-In the starting input of a detached canvas, type a message and press **Enter**.
-**Shift+Enter** inserts a newline. Choose **Стартовый промпт** to make the
-selected block a static input for downstream tasks, or **Чат с моделью** to
-open a separate conversation. Harness groups start collapsed. Use the arrow
-keys or Tab to focus a harness, Enter to expand it, then Enter on a model
-to send the first message. Esc dismisses the chooser and retains the draft.
+The right panel opens in **Chat with the supermodel**. Type a message and press
+**Enter**, then choose the harness and model for the first turn. **Shift+Enter**
+adds a line. The planner receives the canvas and, when a run is attached,
+its node statuses and artifact directory. You can ask why a task failed or
+what reached a downstream task in the same conversation used to plan the flow.
 
-Selecting a model closes the picker and focuses the message input in the right
-panel. Follow-ups, Markdown replies and operator questions use the same panel
-as task conversations. The canvas stays interactive. Select a block to open
-its inspector, or press Esc to return to the previous selection. To resume a
-chat, choose its first message in the run selector. Reload restores the open
-conversation.
+Select a block to see its own prompt, conversation and configuration. Click
+the canvas background or press **Esc** to return to the planner. Its session
+and draft survive the switch. For a run launched from a planner proposal,
+opening the run also opens the originating conversation when available.
+Earlier chats remain accessible in the run selector.
 
 ### Build a flow without writing YAML
 
@@ -147,8 +158,8 @@ above; building and running share one view).
 
 - **Grow the graph by clicking.** Hover a block and hit **▸** to add a block that
   *depends on* this one (drawn to its right), or **∥** to add a *parallel*
-  sibling (below, same stage, same dependencies). The header's **＋ Задача ▾**
-  drops a free block anywhere — **Промпт** in the menu makes it a starter
+  sibling (below, same stage, same dependencies). The header's **＋ Task ▾**
+  drops a free block anywhere — **Prompt** in the menu makes it a starter
   `prompt` block. Drag a block to place it — positions are stored on the task
   (`pos: {x, y}` in the YAML, ignored by the runner) so the layout survives a
   save/reopen. A flow with no stored positions lays itself out by execution
@@ -158,14 +169,14 @@ above; building and running share one view).
   not a drag) and the right panel opens on it: the prompt card is the chat's
   first card, and the collapsible config above carries id, harness (a dropdown
   that greys `model` out for CLIs that don't honour it), per-block
-  *Зависимости* checkboxes, the task **directory** (`cwd`), and an *optional*
+  *Dependencies* checkboxes, the task **directory** (`cwd`), and an *optional*
   (best-effort branch) toggle. The **Model** field autocompletes from
   the harness's *live* catalog — pulled from the CLI itself (coddy's config,
   `codex debug models`, `opencode models`), never a hardcoded table — with its
   own default shown and a ↻ to refetch; you can always type any id instead.
   The **Inputs** button opens
   a window for the flow's `key=value` inputs.
-- **Wire the DAG** two ways: tick *Зависимости* in the config strip, or just
+- **Wire the DAG** two ways: tick *Dependencies* in the config strip, or just
   type `${steps.<id>.output}` in a prompt — references auto-wire the edge, and
   the edges, execution levels and the YAML (small button, top right) update as
   you go.
@@ -173,7 +184,7 @@ above; building and running share one view).
   (`plan` + `connectors::resolve`) on every edit — unknown harness, a model on a
   harness that can't set one, a dependency cycle — and shows the error inline
   before you can save. The YAML view shows exactly what will be written.
-- **⤓ Шаблон** (Save) writes the file to `--flows-root` (`zori-flows` by
+- **⤓ Template** (Save) writes the file to `--flows-root` (`zori-flows` by
   default); **open saved…** re-loads any of them (or a path) back onto the
   canvas. **▶ Run** (Save & Run) persists it, boots it as a run, and attaches
   that run to this same canvas — its blocks light up with live status, and their
@@ -185,7 +196,7 @@ spec and the server's verdict — grouped as: flow authoring (`/api/flows[/open|
 /validate|/save|/boot]`, `/api/harnesses[/:id/models]`), runs and steering
 (`/api/runs[/:id/{events,transcript/:node,steer,answer,rerun,rerun-stale,
 run-proposal,reject-proposal}]`), planner chat (`POST /api/chats`), and the
-planner's inventories (`/api/catalog`, `/api/skills` — each documented under
+planner's inventories (`/api/catalog`, `/api/skills`, `/api/fleet` — each documented under
 its own heading below).
 
 ## Model selection differs per CLI — read this
@@ -206,11 +217,51 @@ which autocompletes from it) pulls each catalog live — from coddy's
 harness becomes listable by giving its override a `models_cmd`: an argv whose
 stdout is one model id per line.
 
+### Adding a harness: the personal store
+
+Besides the built-ins and a flow's own `harnesses:` block there is a personal
+layer: **`~/.zori/harnesses.yml`** — machine-personal state next to the skills
+store and the fleet (D11). Precedence is tightest last: built-in → personal →
+the flow's block, so a personal entry on a built-in id refines it everywhere
+(a flow can still narrow it per flow), and a new id becomes a first-class
+harness at once — it appears in `zori harnesses`, `zori models`, `zori
+catalog`, `/api/harnesses`, the console's harness dropdown, the Fleet dialog
+and the planner brief without touching any flow. The plumbing ids `prompt`
+and `echo` cannot be redefined here; a malformed file is ignored with a
+warning, never fatal.
+
+The schema is the same map of overrides a flow accepts:
+
+```yaml
+# ~/.zori/harnesses.yml
+devin:
+  description: "Devin CLI (SWE-2 models)."
+  command: ["devin"]
+  model_flag: "--model"
+  prompt_via: arg
+  prompt_arg: "-p"                # the flag before the prompt (-p "<prompt>")
+  prompt_file_flag: "--prompt-file"
+  extra_args: ["--permission-mode", "accept-edits"]
+  replaceable_flags: ["--permission-mode"]   # a task's args may swap it
+  models_cmd: ["sh", "-c", "devin models list --format json | jq -r '.families[].variants[].model_uid'"]
+  model_notes:
+    swe-2-high: "Stronger SWE-2 — hard fixes."
+```
+
+`command` is the only required field for a new id. A user-defined harness is
+fire-and-forget in v1: sessions are not resumable, so the watchdog retries
+from scratch and console chats cannot steer it (the planner brief says so
+honestly). `zori harnesses` lists every resolvable harness with its source
+(`builtin` / `personal`), whether per-run models work and whether the binary
+was found on PATH.
+
 ### Planner catalog
 
-`zori catalog` prints a JSON snapshot of built-in harnesses. The console exposes
-the same inventory at `GET /api/catalog`. `zori catalog --flow path/to/flow.yml`
-also resolves that flow's custom harnesses, listing commands and operator notes.
+`zori catalog` prints a JSON snapshot of the harnesses resolvable on this
+machine — built-ins plus the personal store (`~/.zori/harnesses.yml`). The
+console exposes the same inventory at `GET /api/catalog`. `zori catalog --flow
+path/to/flow.yml` also resolves that flow's custom harnesses (its block wins
+per id), listing commands and operator notes.
 
 Each entry describes the harness, per-task model selection, session resume,
 executable presence, discovery status and the default model when known.
@@ -242,6 +293,24 @@ Notes appear as `operator_note` alongside source metadata for discovered
 models. Unknown IDs in notes do not create candidates. An unavailable model
 list or quota source leaves the other harness entries usable.
 
+### The model fleet
+
+The **⚓ Fleet** button in the console header opens a multi-select over every
+installed agent harness: each harness is a collapsed group, expanding it
+lists its models from the live catalog, and **Enter toggles** a pick — the
+dialog stays open until **Save** (or Esc, which discards unsaved toggles).
+The saved roster lands in `~/.zori/fleet.json` — machine-personal state next
+to the global skills store (D11), never in a project checkout.
+
+What the fleet *does*: planner chats receive it as a **Model fleet** section
+of their brief, so a proposed graph draws `model:` values from the
+operator's own roster instead of the whole catalog. It does not hard-constrain
+anything — the task editor's Model field still accepts any id, and a saved
+pick whose harness has vanished stays visible in the picker (marked, removable)
+rather than being silently dropped. The server validates on save: an entry
+must name an installed agent harness that honours per-run models, so the
+runner never meets a fleet pair it would refuse at boot.
+
 ## Skills
 
 A *skill* is a markdown file of standing instructions you hand to a node so it
@@ -263,7 +332,7 @@ tasks:
   - id: draft
     harness: coddy
     model: neuraldeep/kimi-k2.6
-    in: "Собери флоу для ревью из трёх независимых агентов и сборки"
+    in: "Build a review flow of three independent agents and a build"
     skills: [russian-style]      # this node also carries team-skills/russian-style.md
 ```
 
@@ -287,7 +356,7 @@ carries the *discipline* rather than the syntax: which phases to walk (discuss �
 agree → emit the graph), when to fan out versus keep a node single, how to pick a
 harness, and the two hard boundaries the planner chat leans on — *never save a
 file, never launch a pipeline* (see below). The console's planner chat
-(**Чат с моделью**) attaches **both** automatically: start the chat and the model
+(**Chat with the model**) attaches **both** automatically: start the chat and the model
 already speaks flow *and* keeps to the protocol, so "make me a three-reviewer flow"
 comes back as a config the builder can render. Send an explicit `skills` list —
 including an empty one — to override that default; the chat's skills toggle in the
@@ -318,10 +387,10 @@ The planner receives the selected skills, the installed harness inventory and a 
    a broken card and shrug: it sends a **system turn** back into the *same* agent
    session naming the failures and demanding the full corrected graph, capped at
    two repair rounds so a looping model can't spin the run.
-5. **Run — you click.** A valid proposal parks with a **▶ Запустить** button.
+5. **Run — you click.** A valid proposal parks with a **▶ Run** button.
    Only your click launches it: the server re-parses the YAML it stored (never
    trusting what came back from the browser), re-checks the proposal's **hash**
    (so a graph validated a moment ago can't be swapped under your click for a
    different one — a fresh block carries a fresh hash and is refused), applies the
    missing-inputs gate, writes the flow to `--flows-root`, and boots it as an
-   ordinary run. **Отклонить** drops the proposal.
+   ordinary run. **Reject** drops the proposal.

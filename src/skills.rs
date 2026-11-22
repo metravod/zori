@@ -30,8 +30,20 @@ use serde::Serialize;
 
 use crate::config::Flow;
 
+/// The operator's personal zori home: `~/.zori`. Machine-level state that
+/// follows the operator, not any project checkout (D11): the global skill
+/// store lives in `~/.zori/skills`, the model fleet in `~/.zori/fleet.json`.
+pub fn personal_dir() -> PathBuf {
+    match std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+        Some(home) => PathBuf::from(home).join(".zori"),
+        None => PathBuf::from(".zori"),
+    }
+}
+
 /// The shared, machine-wide skill store: `~/.zori/skills`.
-pub const GLOBAL_SUBDIR: &str = ".zori/skills";
+pub fn global_dir() -> PathBuf {
+    personal_dir().join("skills")
+}
 /// The per-project skill store, looked up in the current working directory.
 pub const PROJECT_SUBDIR: &str = "zori-skills";
 
@@ -79,16 +91,6 @@ impl Skill {
     /// task always shows which skills were attached.
     fn section(&self) -> String {
         format!("# Skill: {}\n{}", self.name, self.body.trim())
-    }
-}
-
-/// The machine-wide store directory. No `dirs` crate (the project reads
-/// `HOME`/`USERPROFILE` directly elsewhere, e.g. `artifacts::expand_home`); an
-/// unset home just means the global layer contributes nothing.
-pub fn global_dir() -> PathBuf {
-    match std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
-        Some(home) => PathBuf::from(home).join(GLOBAL_SUBDIR),
-        None => PathBuf::from(GLOBAL_SUBDIR),
     }
 }
 

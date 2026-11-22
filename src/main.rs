@@ -99,12 +99,23 @@ async fn real() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Harnesses => {
-            for id in zori::connectors::builtin_ids() {
-                let c = zori::connectors::resolve(id, None)?;
+            let personal_ids = zori::connectors::personal_harnesses();
+            for id in zori::connectors::all_ids() {
+                let c = zori::connectors::resolve(&id, None)?;
+                let src = if personal_ids.contains_key(&id) {
+                    if zori::connectors::builtin_ids().contains(&id.as_str()) { "builtin+personal" } else { "personal" }
+                } else {
+                    "builtin"
+                };
+                let found = c.command.first()
+                    .map(|cmd| zori::catalog::executable_found(cmd, c.env.get("PATH")))
+                    .unwrap_or(false);
                 println!(
-                    "{:<6} model-per-run={}  cmd={}  prompt={:?}",
+                    "{:<10} {:<18} model-per-run={}  found={}  cmd={}  prompt={:?}",
                     c.id,
+                    src,
                     c.supports_model,
+                    if found { "yes" } else { "no" },
                     c.command.join(" "),
                     c.prompt_via
                 );
@@ -150,13 +161,13 @@ async fn real() -> Result<()> {
             Ok(())
         }
         Command::Catalog { flow } => {
-            let overrides = match flow {
-                Some(path) => {
-                    let yaml = std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-                    serde_yaml::from_str::<Flow>(&yaml)?.harnesses
-                }
-                None => Default::default(),
-            };
+            // Personal harnesses participate even without --flow; a flow's own
+            // block wins per id on top of them.
+            let mut overrides = zori::connectors::personal_harnesses();
+            if let Some(path) = flow {
+                let yaml = std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+                overrides.extend(serde_yaml::from_str::<Flow>(&yaml)?.harnesses);
+            }
             let catalog = zori::catalog::discover(&overrides).await;
             println!("{}", serde_json::to_string_pretty(&catalog)?);
             Ok(())
@@ -164,11 +175,11 @@ async fn real() -> Result<()> {
         Command::Models { harness } => {
             let ids: Vec<String> = match harness {
                 Some(h) => vec![h],
-                // All built-ins that take a per-run model, in catalog order.
+                // Everything resolvable here that takes a per-run model.
                 None => {
                     let mut v = Vec::new();
-                    for id in zori::connectors::builtin_ids() {
-                        if let Ok(c) = zori::connectors::resolve(id, None) {
+                    for id in zori::connectors::all_ids() {
+                        if let Ok(c) = zori::connectors::resolve(&id, None) {
                             if c.supports_model {
                                 v.push(c.id);
                             }
@@ -182,7 +193,9 @@ async fn real() -> Result<()> {
                 // resolve fails loudly for an unknown id — the user's typo
                 // should say so, not silently print nothing.
                 let conn = zori::connectors::resolve(&id, None)?;
-                match zori::models::list_models(&conn, None).await {
+                // A personal harness lists models through its models_cmd.
+                let personal = zori::connectors::personal_harnesses().get(&id).cloned();
+                match zori::models::list_models(&conn, personal.as_ref()).await {
                     Ok(list) => {
                         println!("{} ({}):", list.harness, list.source);
                         if let Some(d) = &list.default {

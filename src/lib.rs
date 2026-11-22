@@ -18,6 +18,7 @@ pub mod artifacts;
 pub mod config;
 pub mod connectors;
 pub mod dag;
+pub mod fleet;
 pub mod models;
 pub mod proposal;
 pub mod runner;

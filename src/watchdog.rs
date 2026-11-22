@@ -3,7 +3,7 @@
 //! operator (or answer it canned in unattended mode), or accept the result.
 //!
 //! Born of the first real overnight `zori-review` (2026-11-17): one node
-//! looped «Продолжаю…» until its context died and ended in a
+//! looped "Continuing…" until its context died and ended in a
 //! `<response clipped>` marker with exit 0, two others died on a timeout kill
 //! and a crash — and the only recourse was a human in the morning. The
 //! watchdog turns each of those into an automatic next step, bounded by
@@ -114,12 +114,45 @@ pub enum Verdict {
     Ok,
     /// The reply looks unfinished; continue the SAME session.
     Nudge(NudgeKind),
+    /// Coddy stopped mid-task at the per-turn step cap, even if it exited 0.
+    CoddyStepLimit(u64),
+    /// The summary reports unfinished work. Preserve it for the operator.
+    Incomplete,
     /// The agent asked the operator something (the payload after `ASK:`).
     Ask(String),
     /// The attempt failed in a way worth one more from-scratch try
     /// (timeout, non-zero exit). Deterministic driver errors never reach
     /// `judge` — they error out before an attempt exists.
     Retry(String),
+}
+
+/// The print CLI writes its own stop notice to stderr. The number is configurable.
+fn coddy_step_limit(stderr: &str) -> Option<u64> {
+    stderr.lines().find_map(|line| {
+        let notice = line.trim().strip_prefix("Stopped after ")?;
+        let (count, _) = notice.split_once(" steps, the step limit set by agent.max_turns.")?;
+        count.parse().ok()
+    })
+}
+
+pub const CODDY_SUMMARY: &str = "From the history of this session, give the final result of the \
+    original task in one message, without tool calls or new actions. Keep the requested output \
+    format. State what was done and which checks actually passed. If the task is unfinished or the \
+    result cannot be confirmed, start your reply with ZORI_INCOMPLETE on its own line and list \
+    what remains.";
+
+pub fn coddy_verdict(facts: &Attempt, stderr: &str, summarizing: bool) -> Option<Verdict> {
+    if !facts.success {
+        return None;
+    }
+    if let Some(steps) = coddy_step_limit(stderr) {
+        return Some(Verdict::CoddyStepLimit(steps));
+    }
+    let first_line = facts.reply.trim_start().lines().next().map(str::trim_end);
+    if summarizing && (first_line == Some("ZORI_INCOMPLETE") || ask_of(facts.reply).is_some()) {
+        return Some(Verdict::Incomplete);
+    }
+    None
 }
 
 /// Facts of one finished attempt, as the driver knows them.
@@ -164,6 +197,8 @@ pub fn judge(a: &Attempt, ask_protocol: bool) -> Verdict {
     if a.reply.trim().is_empty() {
         return Verdict::Nudge(NudgeKind::Empty);
     }
+    // The word list stays multilingual on purpose: agents keep replying in
+    // the operator's language, and a progress loop is a loop in any of them.
     if a.reply.lines().filter(|l| !l.trim().is_empty()).all(|l| {
         matches!(l.trim().trim_end_matches(['.', '…']).to_lowercase().as_str(),
                  "продолжаю" | "continuing" | "working on it")
@@ -179,6 +214,14 @@ pub fn judge(a: &Attempt, ask_protocol: bool) -> Verdict {
         return Verdict::Retry(a.reply.trim().to_string());
     }
     Verdict::Ok
+}
+
+/// OpenCode can finish the answer and then exit 1 on an earlier interactive tool
+/// cancellation. Only the final step's text is evidence of a usable answer.
+pub fn accept_opencode_report(facts: &Attempt, events: &crate::connectors::OpencodeEvent) -> bool {
+    events.stopped && events.error.is_none() && events.late_input_error.is_some()
+        && !facts.timed_out && matches!(facts.exit_code, Some(0 | 1))
+        && judge(&Attempt { success: true, ..*facts }, true) == Verdict::Ok
 }
 
 /// The first standalone blocking or inline question outside a fenced example.
@@ -224,28 +267,28 @@ pub fn question_line(line: &str) -> Option<crate::state::OperatorQuestion> {
 
 /// The message a nudge continues the session with. Deliberately orders the
 /// model to STOP working and produce the final answer: the incident pattern
-/// was a model "Продолжаю"-ing itself into context death — a naive "continue"
+/// was a model "Continuing"-ing itself into context death — a naive "continue"
 /// nudge would feed exactly that loop.
 pub fn nudge_text(kind: NudgeKind) -> &'static str {
     match kind {
         NudgeKind::Clipped => {
-            "⚠ Твой предыдущий ответ оборвался (лимит вывода/контекста). \
-             НЕ перечитывай файлы и не продолжай работу с того же места: немедленно выдай финальный ответ \
-             одним сообщением — компактное резюме сделанного и результат. Если что-то осталось несделанным, \
-             перечисли недоделки коротким списком в конце."
+            "⚠ Your previous reply was cut off (output/context limit). \
+             Do NOT re-read files or resume the work from where it stopped: immediately produce the \
+             final answer as one message — a compact summary of what was done, plus the result. If \
+             anything is still undone, list the gaps in a short list at the end."
         }
-        NudgeKind::Progress => "Ответ содержит только сообщение о ходе работы. Заверши задачу и выдай результат.",
+        NudgeKind::Progress => "The reply contains only a progress message. Finish the task and produce the result.",
         NudgeKind::Empty => {
-            "⚠ Твой предыдущий ответ пуст. Выдай ответ по задаче одним сообщением — полностью и без вопросов."
+            "⚠ Your previous reply is empty. Answer the task in one message — completely and without questions."
         }
     }
 }
 
 /// The canned answer an unattended run gives a question that slipped through
 /// despite the "don't ask" preamble.
-pub const AUTO_ANSWER: &str = "Запуск идёт без оператора, отвечать никто не будет. \
-     Действуй по собственному усмотрению: прими разумные допущения и закончи задачу. \
-     Все принятые допущения перечисли в финальном ответе.";
+pub const AUTO_ANSWER: &str = "This run is unattended, nobody will answer. \
+     Proceed at your own discretion: make reasonable assumptions and finish the task. \
+     List every assumption you made in your final answer.";
 
 /// How many canned answers an unattended run gives before the question is
 /// left in the output as-is (bounding an ask-looping model).
@@ -257,19 +300,22 @@ pub const AUTO_ANSWERS_MAX: u32 = 2;
 pub fn preamble(s: &Settings) -> Option<String> {
     if s.unattended {
         Some(
-            "# Протокол связи с оператором\n\n\
-             Этот запуск идёт без оператора (пакетный/ночной): не задавай вопросов и не жди ответа. \
-             Если информации не хватает — прими разумное допущение и продолжай; все допущения перечисли в финальном ответе."
+            "# Operator communication protocol\n\n\
+             This run is unattended (batch/overnight): ask no questions and wait for no answers. \
+             If information is missing, make a reasonable assumption and continue; list every \
+             assumption in your final answer."
                 .into(),
         )
     } else if s.ask {
         Some(
-            "# Протокол связи с оператором\n\n\
-             Если без решения оператора дальше идти нельзя, напиши отдельной строкой `ASK: вопрос` и заверши ход. \
-             Для уточнения по ходу работы напиши отдельную строку с префиксом `ASK_INLINE: ` и продолжай независимую работу. \
-             После любого префикса можно передать JSON вида {\"question\":\"Какой формат?\",\"options\":[\"JSON\",\"CSV\"]}. \
-             Пиши вопросы обычным сообщением, без блока кода и без вызова интерактивного инструмента. \
-             В конце хода дождись ответов через zori: заверши сообщение, ответы придут следующим ходом."
+            "# Operator communication protocol\n\n\
+             If you cannot proceed without the operator's decision, write `ASK: <question>` on its \
+             own line and end your turn. For a clarification while you keep working, write a \
+             separate line prefixed with `ASK_INLINE: ` and continue with the independent work. \
+             After either prefix you may pass JSON like {\"question\":\"Which format?\",\"options\":[\"JSON\",\"CSV\"]}. \
+             Write questions as a plain message, with no code block and no interactive tool call. \
+             At the end of your turn, wait for answers through zori: end the message, the answers \
+             arrive in the next turn."
                 .into(),
         )
     } else {
@@ -309,6 +355,32 @@ mod tests {
     }
 
     #[test]
+    fn opencode_late_cancel_requires_a_finished_usable_report() {
+        let start = r#"{"type":"step_start"}"#;
+        let text = r#"{"type":"text","part":{"type":"text","text":"Final report"}}"#;
+        let stop = r#"{"type":"step_finish","part":{"reason":"stop"}}"#;
+        let cancel = r#"{"type":"error","error":{"message":"Cancelled a request for input this run cannot answer: Web Search"}}"#;
+        let fatal = r#"{"type":"error","error":{"message":"connection lost"}}"#;
+        for (events, usable) in [
+            (vec![start, text, stop, cancel], true),
+            (vec![start, text, cancel], false),
+            (vec![start, text, stop, fatal, cancel], false),
+            (vec![cancel, start, text, stop], false),
+            (vec![start, text, stop, start, stop, cancel], false),
+        ] {
+            let ev = crate::connectors::parse_opencode_jsonl(&events.join("\n"));
+            let reply = ev.agent_texts[ev.final_step_start..].join("\n");
+            let facts = Attempt { reply: &reply, success: false, timed_out: false, exit_code: Some(1) };
+            assert_eq!(accept_opencode_report(&facts, &ev), usable);
+            for incomplete in ["", "Continuing…", "<response clipped>", "ASK: help", "connection lost"] {
+                assert!(!accept_opencode_report(&Attempt { reply: incomplete, ..facts }, &ev));
+            }
+            assert!(!accept_opencode_report(&Attempt { timed_out: true, ..facts }, &ev));
+            assert!(!accept_opencode_report(&Attempt { exit_code: Some(7), ..facts }, &ev));
+        }
+    }
+
+    #[test]
     fn defaults_switch_the_supervisor_on() {
         let d = Settings::defaults();
         assert_eq!(d, Settings::resolve(None, None));
@@ -343,49 +415,52 @@ mod tests {
     #[test]
     fn judge_spots_every_pathology() {
         // The incident verbatim: exit 0, clipped marker in the reply.
-        let v = judge(&attempt("Продолжаю…\n<response clipped>"), true);
+        let v = judge(&attempt("Continuing…\n<response clipped>"), true);
         assert_eq!(v, Verdict::Nudge(NudgeKind::Clipped));
 
         // Empty reply on success.
         assert_eq!(judge(&attempt("  \n"), true), Verdict::Nudge(NudgeKind::Empty));
 
         // A question, per the protocol.
-        let v = judge(&attempt("Готов готовить план.\nASK: какой формат ответа?"), true);
-        assert_eq!(v, Verdict::Ask("ASK: какой формат ответа?".into()));
+        let v = judge(&attempt("Ready to draft the plan.\nASK: which reply format?"), true);
+        assert_eq!(v, Verdict::Ask("ASK: which reply format?".into()));
 
         // With the protocol off the same text is just… text.
-        let v = judge(&attempt("ASK: какой формат ответа?"), false);
+        let v = judge(&attempt("ASK: which reply format?"), false);
         assert_eq!(v, Verdict::Ok);
 
         // Failures outrank questions and clips.
-        let a = Attempt { reply: "ASK: что?\n<response clipped>", success: false, timed_out: false, exit_code: Some(1) };
+        let a = Attempt { reply: "ASK: what?\n<response clipped>", success: false, timed_out: false, exit_code: Some(1) };
         assert_eq!(judge(&a, true), Verdict::Retry("exit 1".into()));
         let a = Attempt { reply: "", success: false, timed_out: true, exit_code: None };
         assert_eq!(judge(&a, true), Verdict::Retry("timed out".into()));
 
+        assert_eq!(judge(&attempt("Continuing…\nContinuing…"), true), Verdict::Nudge(NudgeKind::Progress));
+        // Agents keep replying in the operator's language; the Russian loop
+        // word of the original incident stays detected.
         assert_eq!(judge(&attempt("Продолжаю…\nПродолжаю…"), true), Verdict::Nudge(NudgeKind::Progress));
         assert_eq!(judge(&attempt("connection lost"), true), Verdict::Retry("connection lost".into()));
         assert_eq!(judge(&attempt("Investigated connection lost. Reconnect test passes."), true), Verdict::Ok);
-        assert_eq!(judge(&attempt("Продолжаю…\nГотово."), true), Verdict::Ok);
+        assert_eq!(judge(&attempt("Continuing…\nDone."), true), Verdict::Ok);
 
         assert_eq!(judge(&attempt("Fixed handling of `<response clipped>`. Tests pass."), true), Verdict::Ok);
         assert_eq!(judge(&attempt("Partial\n<response clipped><entry>Preview omitted"), true), Verdict::Nudge(NudgeKind::Clipped));
 
         // Healthy reply.
-        assert_eq!(judge(&attempt("Готово: 3 правки, тесты зелёные."), true), Verdict::Ok);
+        assert_eq!(judge(&attempt("Done: 3 edits, tests green."), true), Verdict::Ok);
     }
 
     #[test]
     fn ask_of_takes_the_first_ask_line_only() {
-        let r = "шапка\n  ASK: первый вопрос?\nхвост\nASK: второй?";
-        assert_eq!(ask_of(r).as_deref(), Some("ASK: первый вопрос?"));
-        assert_eq!(ask_of("нет вопросов тут"), None);
+        let r = "header\n  ASK: first question?\nbody\nASK: second one?";
+        assert_eq!(ask_of(r).as_deref(), Some("ASK: first question?"));
+        assert_eq!(ask_of("no questions here"), None);
         // `TASK:` and friends are not asks; the marker is case-sensitive.
         assert_eq!(ask_of("ask: lowercase?"), None);
         assert_eq!(ask_of("TASK: not a question"), None);
         assert_eq!(ask_of("```text\nASK_INLINE: example\n```"), None);
         assert_eq!(ask_of("ASK_INLINE:   "), None);
-        assert_eq!(ask_of("ASK_INLINE: формат?").as_deref(), Some("ASK_INLINE: формат?"));
+        assert_eq!(ask_of("ASK_INLINE: which format?").as_deref(), Some("ASK_INLINE: which format?"));
     }
 
     #[test]
@@ -394,7 +469,7 @@ mod tests {
         assert!(ask.contains("ASK: "), "the convention must be taught: {ask}");
 
         let night = preamble(&Settings { unattended: true, ..Settings::defaults() }).unwrap();
-        assert!(night.contains("без оператора"), "{night}");
+        assert!(night.contains("unattended"), "{night}");
         assert!(!night.contains("ASK: "), "unattended must not invite questions: {night}");
 
         assert!(preamble(&Settings { ask: false, ..Settings::defaults() }).is_none());

@@ -232,6 +232,7 @@ struct AnswerReq {
 
 #[derive(Deserialize)]
 struct SteerReq {
+    attached_run: Option<String>,
     node: String,
     text: String,
     /// The live canvas graph, sent with the next turn so the planner builds on
@@ -246,7 +247,7 @@ struct RerunReq {
     node: String,
     /// Optional corrected task spec from the canvas ("rerun with fix"): the
     /// node re-runs with these leaf fields instead of the boot-time ones, so
-    /// e.g. a typo'd model name is fixed in Конфиг and the rerun actually uses
+    /// e.g. a typo'd model name is fixed in Config and the rerun actually uses
     /// the correction. Validated by [`validate_task_edit`] before applying.
     #[serde(default)]
     task: Option<serde_json::Value>,
@@ -402,6 +403,7 @@ fn build_router(state: std::sync::Arc<AppState>) -> Router {
         .route("/api/runs/:id/reject-proposal", post(reject_proposal))
         .route("/api/catalog", get(planner_catalog))
         .route("/api/skills", get(list_skills))
+        .route("/api/fleet", get(get_fleet).put(put_fleet))
         .route("/api/harnesses", get(harnesses))
         .route("/api/harnesses/:id/models", get(harness_models))
         .route("/api/flows", get(list_flows))
@@ -428,6 +430,7 @@ async fn index() -> impl IntoResponse {
 #[derive(Serialize)]
 struct RunSummary {
     chat_title: Option<String>,
+    launched_run: Option<String>,
     run_id: String,
     flow_name: String,
     status: String,
@@ -476,6 +479,8 @@ async fn list_runs(State(state): State<std::sync::Arc<AppState>>) -> Json<Vec<Ru
         .map(|emitter| {
             let s = emitter.snapshot();
             RunSummary {
+                launched_run: s.nodes.get("chat").filter(|_| s.is_chat)
+                    .and_then(|n| n.proposal.as_ref()?.run_id.clone()),
                 chat_title: s.is_chat.then(|| {
                     s.nodes.get("chat").and_then(|n| n.turns.first())
                         .map(|t| t.text.trim().chars().take(48)
@@ -496,10 +501,12 @@ async fn list_runs(State(state): State<std::sync::Arc<AppState>>) -> Json<Vec<Ru
 
 #[derive(Deserialize)]
 struct ChatRequest {
+    graph: Option<serde_json::Value>,
+    attached_run: Option<String>,
     harness: String,
     model: String,
     prompt: String,
-    /// Project folder for the planner (the builder's «директория запуска»).
+    /// Project folder for the planner (the builder's "launch directory").
     /// Absent/empty → the classic chat shape: an isolated per-task work dir.
     /// When given, the chat flow gets `cwd:` + `workspace: flow`, so the agent
     /// process runs IN the folder from the very first message and every
@@ -526,30 +533,34 @@ struct ChatRequest {
 /// answers, so it must say what a valid reply *is* (plain text to agree on,
 /// then exactly one ` ```zori-flow ` block once agreed), not merely hint.
 const CHAT_PROTOCOL: &str = "\
-Ты — планировщик пайплайнов zori. Соблюдай протокол ответа буквально.
+You are the zori supermodel. Discuss the graph and answer questions about the current run, checking your conclusions against the artifacts. When planning a pipeline, follow the protocol below.
 
-ФАЗЫ. Сначала обсуждай план обычным текстом: шаги, кто их делает, что откуда \
-берётся, где параллельность. YAML показывай только когда оператор согласовал состав.
+PHASES. First discuss the plan in plain text: the steps, who runs each one, what feeds into what, where the parallelism is. Show YAML only once the operator has agreed on the composition.
 
-Границы (не нарушай ни при каких условиях):
-- НИЧЕГО не сохраняй: не пиши flow.yaml, не правь файлы проекта. Граф на диск \
-кладёт оператор своим запуском.
-- НИЧЕГО не запускай: не гоняй пайплайны, CLI, тесты, `zori run`. Запускает \
-только оператор кнопкой.
-- Каталог харнессов не исследуй запуском CLI — реальное состояние уже приведено ниже.
+Boundaries (never break these under any circumstances):
+- SAVE NOTHING: do not write flow.yaml, do not edit project files. The graph reaches the disk only when the operator launches it.
+- RUN NOTHING: do not run pipelines, CLIs, tests, `zori run`. Only the operator runs things, with the button.
+- Do not probe the harness catalog by running CLIs — the real state is already listed below.
 
-ФОРМАТ ГРАФА. Когда состав согласован, выдай ПОЛНЫЙ граф одним блоком, помеченным \
-`zori-flow` (тройной обратный апостроф + слово zori-flow, внутри только YAML). Один \
-такой блок = одно предложение; целиком, не фрагментом и не диффом. Больше ничего \
-после блока не добавляй. Блок без этой метки zori не увидит и не предложит запустить.
+GRAPH FORMAT. Once the composition is agreed, emit the FULL graph as a single block tagged `zori-flow` (triple backtick + the word zori-flow, YAML only inside). One such block = one proposal; complete, not a fragment and not a diff. Add nothing after the block. A block without this tag zori will not see and will not offer to run.
 
-КАНВАС. Валидный граф из блока zori сам ляжет на канвас рядом с чатом — в файл его \
-не пиши. Оператор правит его руками: двигает узлы, меняет модель и параметры, \
-дорисовывает зависимости, а запускает кнопкой — запускается ровно то, что на канвасе. \
-Если в следующем ходе тебе прислали блок «Текущий граф на канвасе» — это граф перед \
-оператором, возможно отредактированный им вручную. Строй новый граф от него и сохрани \
-правки оператора (модели, параметры, зависимости); координаты pos не воспроизводи — \
-это только раскладка. Ответь снова ПОЛНЫМ графом одним блоком zori-flow, как выше.";
+CANVAS. A valid graph from a zori block lands on the canvas next to the chat by itself — do not write it to a file. The operator edits it by hand: moves nodes, changes models and parameters, draws more dependencies, and runs it with the button — exactly what is on the canvas is what runs. If the next turn sends you a \"The current graph on the canvas\" block — that is the graph in front of the operator, possibly edited by hand. Build the new graph from it and preserve the operator's edits (models, parameters, dependencies); do not reproduce pos coordinates — they are layout only. When a graph change is agreed, return the FULL graph as one zori-flow block. Answer a question about the run in plain text.";
+
+/// Point the planner to the selected run even when its working directory is
+/// another project. Read fresh artifacts when answering follow-up questions.
+fn planner_run_context(state: &AppState, id: Option<&str>) -> Result<String, ApiError> {
+    let Some(id) = id else { return Ok(String::new()); };
+    let snap = lookup(state, id)?.emitter.snapshot();
+    let dir = crate::artifacts::absolute(&state.runs_root.join(id));
+    let nodes: Vec<_> = snap.nodes.values().map(|n| json!({
+        "node": n.id, "status": n.status, "exit": n.exit_code,
+        "diagnostic": n.stderr.chars().take(320).collect::<String>(),
+        "output_chars": n.output.chars().count(),
+    })).collect();
+    Ok(format!("\n\nOpen run {id}. Node states: {}. Artifact directory: {}. \
+        To analyze, read manifest.json and the files of the relevant attempt in this directory.",
+        json!(nodes), dir.display()))
+}
 
 async fn start_chat(
     State(state): State<std::sync::Arc<AppState>>,
@@ -595,15 +606,23 @@ async fn start_chat(
         out.push_str("\n\n");
         out.push_str(&brief);
     }
+    // The operator's model fleet, when one is saved: the planner proposes
+    // `model:` values from the operator's own roster instead of inventing ids
+    // (the same class of dead-node bug the harness brief already kills).
+    if let Some(brief) = crate::fleet::brief() {
+        out.push_str("\n\n");
+        out.push_str(&brief);
+    }
     // With a project folder, tell the planner where it IS: the process cwd is
     // already there (see `chat_flow_yaml`), and one factual line keeps the
     // model from `cd`-ing around or inventing absolute paths.
     if let Some(dir) = &project_dir {
-        out.push_str("\n\nРабочий каталог этой сессии — ");
+        out.push_str("\n\nThis session's working directory — ");
         out.push_str(&dir.display().to_string());
-        out.push_str(". Ты уже запущен в нём; файлы проекта открывай по относительным путям.");
+        out.push_str(". You are already running in it; open project files by relative paths.");
     }
-    let yaml = chat_flow_yaml(&req, &skills, &out, project_dir.as_deref())
+    let context = planner_run_context(&state, req.attached_run.as_deref())?;
+    let yaml = chat_flow_yaml(&req, &skills, &out, project_dir.as_deref(), &context)
         .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let id = boot_flow(state, &yaml, None, Vec::new(), None).await
         .map_err(|e| ApiError(StatusCode::BAD_REQUEST, format!("{e:#}")))?;
@@ -620,11 +639,11 @@ fn resolve_project_dir(raw: &str) -> Result<std::path::PathBuf, String> {
     match std::fs::metadata(&abs) {
         Ok(m) if m.is_dir() => Ok(abs),
         Ok(_) => Err(format!(
-            "проектная папка не каталог: {raw} (→ {})",
+            "project folder is not a directory: {raw} (→ {})",
             abs.display()
         )),
         Err(e) => Err(format!(
-            "проектная папка недоступна: {raw} (→ {}): {e}",
+            "project folder unavailable: {raw} (→ {}): {e}",
             abs.display()
         )),
     }
@@ -642,12 +661,18 @@ fn chat_flow_yaml(
     skills: &[String],
     out: &str,
     project_dir: Option<&std::path::Path>,
+    run_context: &str,
 ) -> Result<String, serde_yaml::Error> {
     let mut flow = json!({
         "name": "chat", "inputs": { "message": req.prompt },
         "tasks": [{"id": "chat", "harness": req.harness, "model": req.model,
                    "in": "${inputs.message}", "out": out, "skills": skills}]
     });
+    let context = format!("{}{run_context}", crate::runner::canvas_prompt(req.graph.clone()));
+    if !context.is_empty() {
+        flow["inputs"]["context"] = json!(context);
+        flow["tasks"][0]["in"] = json!("${inputs.message}${inputs.context}");
+    }
     if let Some(dir) = project_dir {
         flow["cwd"] = json!(dir.display().to_string());
         flow["tasks"][0]["workspace"] = json!("flow");
@@ -771,8 +796,9 @@ async fn steer(
     // steer resumes the existing session and re-renders nothing from
     // upstream, so an ancestor that went Stale after this node finished must
     // not lock the transcript.
+    let context = planner_run_context(&state, req.attached_run.as_deref())?;
     let emitter = m.emitter.clone();
-    claim_node(&emitter, &req.node, &[TaskStatus::Done], false)
+    claim_node(&emitter, &req.node, &[TaskStatus::Done], NodeAction::Steer)
         .map_err(|msg| ApiError(StatusCode::CONFLICT, msg))?;
     let node = req.node.clone();
     let text = req.text.clone();
@@ -787,7 +813,7 @@ async fn steer(
     let watch = emitter.clone();
     let handle = tokio::spawn(async move {
         let _guard = lock.lock().await;
-        if let Err(e) = tracked.steer(&emitter, &node, &text, graph).await {
+        if let Err(e) = tracked.steer_with_context(&emitter, &node, &text, graph, &context).await {
             eprintln!("steer '{node}' failed: {e:#}");
         }
     });
@@ -882,8 +908,20 @@ async fn rerun(
     // Review M3+M4: the gate is one atomic mutation that also refuses while a
     // strict dependency is not `Done` (require_deps=true — a rerun re-renders
     // its prompt from upstream, so it must wait for them like a first run
-    // does) and while the first pass still owes work to a descendant.
-    claim_node(&emitter, &req.node, from, true)
+    // does). A failed node in the active level can reserve the barrier
+    // so pending consumers will see its corrected output.
+    let level_retry = if prev == Some(TaskStatus::Failed) {
+        m.tracked.reserve_level_retry(&req.node)
+            .map_err(|e| ApiError(StatusCode::CONFLICT, e.to_string()))?
+    } else {
+        None
+    };
+    let (from, action): (&[_], _) = if level_retry.is_some() {
+        (&[TaskStatus::Failed], NodeAction::RetryInLevel)
+    } else {
+        (from, NodeAction::Rerun)
+    };
+    claim_node(&emitter, &req.node, from, action)
         .map_err(|msg| ApiError(StatusCode::CONFLICT, msg))?;
 
     // Claim won: only now apply the spec mutation. The in-memory parts are
@@ -892,11 +930,12 @@ async fn rerun(
     // hinge on a disk write succeeding.
     if let Some(incoming) = incoming {
         m.tracked.override_task(incoming.clone());
-        // Keep the observable meta honest (the Чат head shows harness·model).
+        // Keep the observable meta honest (the Chat head shows harness·model).
         m.emitter.mutate(|st| {
             if let Some(n) = st.nodes.get_mut(&req.node) {
                 n.harness = incoming.harness.clone();
                 n.model = incoming.model.clone();
+                n.optional = incoming.optional;
             }
         });
         // Persist the corrected flow so a server restart doesn't lose the fix.
@@ -952,6 +991,8 @@ async fn rerun(
     // when we had one is honest: this rerun never really started).
     let watch_node = req.node.clone();
     tokio::spawn(async move {
+        // Keep the level barrier through panic recovery as well as execution.
+        let _level_retry = level_retry;
         if let Err(e) = handle.await {
             eprintln!("rerun driver for '{watch_node}' died: {e:?}");
             release_claim(&watch, &watch_node, prev, &format!("rerun driver died: {e}"));
@@ -1026,7 +1067,9 @@ struct HarnessInfo {
 }
 
 async fn planner_catalog() -> Json<crate::catalog::Catalog> {
-    Json(crate::catalog::discover(&Default::default()).await)
+    // The personal harness store participates even without a flow: a CLI the
+    // operator added to ~/.zori/harnesses.yml is real on this machine.
+    Json(crate::catalog::discover(&crate::connectors::personal_harnesses()).await)
 }
 
 /// A skill entry for the picker UIs: name, one-line description, and where it
@@ -1062,8 +1105,8 @@ async fn list_skills() -> Json<Vec<SkillInfo>> {
 
 async fn harnesses() -> Json<Vec<HarnessInfo>> {
     let mut out = Vec::new();
-    for id in crate::connectors::builtin_ids() {
-        if let Ok(c) = crate::connectors::resolve(id, None) {
+    for id in crate::connectors::all_ids() {
+        if let Ok(c) = crate::connectors::resolve(&id, None) {
             out.push(HarnessInfo {
                 supports_resume: crate::connectors::steerable(&c),
                 id: c.id,
@@ -1079,6 +1122,28 @@ async fn harnesses() -> Json<Vec<HarnessInfo>> {
         }
     }
     Json(out)
+}
+
+/// The operator's saved model fleet (`~/.zori/fleet.json`) — what the Fleet
+/// picker edits and the planner's brief prefers. GET never fails: no file
+/// yet is just an empty fleet.
+async fn get_fleet() -> Json<serde_json::Value> {
+    Json(json!({ "models": crate::fleet::load() }))
+}
+
+#[derive(Deserialize)]
+struct FleetReq {
+    models: Vec<crate::fleet::FleetEntry>,
+}
+
+/// Save the fleet. Validation is the server's — a pair the runner would
+/// refuse at boot (unknown harness, a non-agent, a harness without per-run
+/// models) must not get saved — so the picker's answer is either the cleaned
+/// list back or a plain error the dialog shows as-is.
+async fn put_fleet(Json(req): Json<FleetReq>) -> Result<Json<serde_json::Value>, ApiError> {
+    crate::fleet::save(&req.models)
+        .map_err(|e| ApiError(StatusCode::BAD_REQUEST, format!("{e:#}")))?;
+    Ok(Json(json!({ "models": crate::fleet::load() })))
 }
 
 #[derive(Deserialize)]
@@ -1117,6 +1182,11 @@ async fn harness_models(
     // we know here.
     let conn = crate::connectors::resolve(&id, None)
         .map_err(|e| ApiError(StatusCode::NOT_FOUND, format!("{e:#}")))?;
+    // A personal harness's models_cmd lives in ~/.zori/harnesses.yml — this
+    // route resolves without a flow, so the personal store is the override
+    // the listing consults (a flow's own override still wins at run time
+    // via catalog --flow paths).
+    let personal = crate::connectors::personal_harnesses().get(&id).cloned();
     let cache_key = (id.clone(), conn.extra_args.clone(), Vec::new());
     if !force {
         let fresh = {
@@ -1130,7 +1200,7 @@ async fn harness_models(
             return Ok(Json(v));
         }
     }
-    let list = crate::models::list_models(&conn, None)
+    let list = crate::models::list_models(&conn, personal.as_ref())
         .await
         .map_err(|e| ApiError(StatusCode::BAD_GATEWAY, format!("{e:#}")))?;
     let out = serde_json::to_value(&list)
@@ -1596,17 +1666,17 @@ async fn run_proposal(
     if prop.hash != req.hash {
         return Err(ApiError(
             StatusCode::CONFLICT,
-            "предложение изменилось с тех пор — обнови карточку и подтверди заново".into(),
+            "the proposal changed since then — refresh the card and confirm again".into(),
         ));
     }
     if !prop.valid {
-        let why = if prop.errors.is_empty() { "не прошло проверку".to_string() } else { prop.errors.join("; ") };
-        return Err(ApiError(StatusCode::BAD_REQUEST, format!("предложение не пригодно к запуску: {why}")));
+        let why = if prop.errors.is_empty() { "failed validation".to_string() } else { prop.errors.join("; ") };
+        return Err(ApiError(StatusCode::BAD_REQUEST, format!("the proposal is not runnable: {why}")));
     }
     if prop.status != crate::state::ProposalStatus::Proposed {
         return Err(ApiError(
             StatusCode::CONFLICT,
-            format!("предложение уже {}", proposal_verb(prop.status)),
+            format!("the proposal is already {}", proposal_verb(prop.status)),
         ));
     }
 
@@ -1618,7 +1688,7 @@ async fn run_proposal(
         return Err(ApiError(
             StatusCode::BAD_REQUEST,
             format!(
-                "предложение слишком большое: {} байт (максимум {}) — перегенерируй его",
+                "proposal too large: {} bytes (maximum {}) — regenerate it",
                 prop.raw.len(),
                 crate::proposal::MAX_PROPOSAL_BYTES
             ),
@@ -1650,7 +1720,7 @@ async fn run_proposal(
             // proposed graph that reads `${inputs.k}` nothing supplies would
             // die at that node, so refuse the launch and say which input.
             let flow: Flow = serde_yaml::from_str(&prop.raw)
-                .map_err(|e| ApiError(StatusCode::BAD_REQUEST, format!("flow YAML не разобран: {e}")))?;
+                .map_err(|e| ApiError(StatusCode::BAD_REQUEST, format!("flow YAML failed to parse: {e}")))?;
             let given: Vec<String> = req.inputs.keys().cloned().collect();
             let missing = missing_inputs(&flow, &given);
             if !missing.is_empty() {
@@ -1666,7 +1736,7 @@ async fn run_proposal(
     if !claim_proposal(&emitter, &req.node, &req.hash) {
         return Err(ApiError(
             StatusCode::CONFLICT,
-            "предложение уже запускается или запущено".into(),
+            "the proposal is already launching or launched".into(),
         ));
     }
 
@@ -1690,7 +1760,7 @@ async fn run_proposal(
         }
         Err(e) => {
             revert_proposal(&emitter, &req.node, &req.hash, &format!("{e:#}"));
-            Err(ApiError(StatusCode::BAD_REQUEST, format!("запуск не удался: {e:#}")))
+            Err(ApiError(StatusCode::BAD_REQUEST, format!("launch failed: {e:#}")))
         }
     }
 }
@@ -1723,7 +1793,7 @@ async fn reject_proposal(
         }
     });
     if !changed.load(std::sync::atomic::Ordering::Relaxed) {
-        return Err(ApiError(StatusCode::CONFLICT, "предложение уже закрыто".into()));
+        return Err(ApiError(StatusCode::CONFLICT, "the proposal is already closed".into()));
     }
     Ok(Json(json!({ "ok": true })))
 }
@@ -1736,16 +1806,16 @@ fn proposal_yaml(flow: &Flow) -> Result<String, ApiError> {
     merge_ref_deps(&mut normalized);
     let yaml = serde_yaml::to_string(&normalized)
         .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, format!("serialising proposal: {e}")))?;
-    Ok(format!("# zori flow — предложен в чате и запущен из консоли\n{yaml}"))
+    Ok(format!("# zori flow — proposed in chat, launched from the console\n{yaml}"))
 }
 
 /// Human wording for a consumed proposal in a "can't launch" message.
 fn proposal_verb(status: crate::state::ProposalStatus) -> &'static str {
     use crate::state::ProposalStatus::*;
     match status {
-        Launched => "запущено",
-        Rejected => "отклонено",
-        Proposed => "ожидает",
+        Launched => "launched",
+        Rejected => "rejected",
+        Proposed => "awaiting confirmation",
     }
 }
 
@@ -1843,31 +1913,30 @@ fn parse_spec(value: serde_json::Value) -> Result<Flow, ApiError> {
         .map_err(|e| ApiError(StatusCode::BAD_REQUEST, format!("invalid flow spec: {e}")))
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NodeAction {
+    Steer,
+    Rerun,
+    /// The scheduler will await this retry before launching pending descendants.
+    RetryInLevel,
+}
+
 /// Atomically move a node from one of `from` statuses to `Running`, or
 /// return the reason it cannot be claimed. Under the emitter's lock the
 /// checks and the flip are ONE mutation, so nothing can slip between them
 /// (the old order — check outside, flip inside — let a first-pass level
 /// launch a descendant between the two and double-drive the subtree).
 ///
-/// Review M3: a node is also refused while any transitive DESCENDANT is
-/// still owed work by the first pass (`Pending`/`Running`/`Waiting`).
-/// Steering or re-running a Done ancestor while its downstream still
-/// executes races that work: the pending level reads the outputs snapshot
-/// with or without the fresh value depending on the scheduling, leaving a
-/// transcript that matches neither. `Failed`/`Skipped`/`Stale` descendants
-/// are terminal — nothing is owed — so a settled run (including a failed
-/// one) re-runs freely.
-///
-/// Review M4: with `require_deps`, the claim also demands every *strict*
-/// dependency be `Done` right now (the same rule as `blocked()`), checked
-/// BEFORE the flip — the rerun path used to accept a `Skipped` node under a
-/// failed parent and wipe its captured output before the dependency check
-/// anywhere else could stop it.
+/// Active descendants prevent changes to a producer whose output they use.
+/// A failed producer reserved in the current level can safely retry with
+/// pending descendants because the scheduler holds those at the barrier.
+/// Reruns also require their strict dependencies to be done before replacing
+/// the previous session and output.
 fn claim_node(
     emitter: &Emitter,
     node: &str,
     from: &[TaskStatus],
-    require_deps: bool,
+    action: NodeAction,
 ) -> Result<(), String> {
     let from = from.to_vec();
     let node = node.to_string();
@@ -1884,7 +1953,7 @@ fn claim_node(
             ));
             return;
         }
-        if require_deps {
+        if action != NodeAction::Steer {
             let blockers: Vec<&String> = n
                 .depends_on
                 .iter()
@@ -1913,10 +1982,9 @@ fn claim_node(
                 if !t.depends_on.iter().any(|d| d == &cur) || !seen.insert(id.clone()) {
                     continue;
                 }
-                if matches!(
-                    t.status,
-                    TaskStatus::Pending | TaskStatus::Running | TaskStatus::Waiting
-                ) {
+                if matches!(t.status, TaskStatus::Running | TaskStatus::Waiting)
+                    || (t.status == TaskStatus::Pending && action != NodeAction::RetryInLevel)
+                {
                     busy.push(id.as_str());
                 }
                 frontier.push(id.clone());
@@ -2198,11 +2266,10 @@ pub async fn load_run(
     let flow: Flow = serde_yaml::from_str(&flow_text).context("parsing flow")?;
     let plan = plan(&flow)?;
 
-    // A node left Running by a restart is unrecoverable (its process is gone);
-    // a Waiting node is equally gone (the parked exec died with the server) —
-    // both come back Stale so the output is treated as unknown and re-run.
+    // No scheduler survives a restart. Queued nodes also need a manual
+    // retry, or they would forever block their failed ancestors from rerunning.
     for n in snap.nodes.values_mut() {
-        if matches!(n.status, TaskStatus::Running | TaskStatus::Waiting) {
+        if matches!(n.status, TaskStatus::Pending | TaskStatus::Running | TaskStatus::Waiting) {
             n.status = TaskStatus::Stale;
             n.ask = None;
             for q in &mut n.questions { q.closed = true; }
@@ -2235,9 +2302,7 @@ pub async fn load_run(
     spawn_persister(emitter.subscribe(), run_dir.clone());
 
     // Reloaded runs never auto-execute: the human steers or clicks rerun. But a
-    // reloaded run can be advanced — re-run anything still Pending (e.g. a node
-    // never reached) or Stale — on demand via /rerun, not here.
-    let _ = &id;
+    // reloaded run can be advanced by retrying interrupted nodes on demand.
     Ok(id)
 }
 
@@ -2271,7 +2336,7 @@ pub async fn load_existing_runs(
 /// Look up a managed run. Returns a shared clone of the `TrackedRun` and the
 /// `Emitter` is fetched via the guard-free clone path (we snapshot here).
 fn lookup(
-    state: &std::sync::Arc<AppState>,
+    state: &AppState,
     id: &str,
 ) -> Result<RunHandle, ApiError> {
     let runs = runs_guard(&state.runs);
@@ -2593,7 +2658,7 @@ mod ui_tests {
 
     #[test]
     fn input_refs_extracts_keys() {
-        assert_eq!(input_refs("${inputs.a} и ${inputs.тема}"), vec!["a", "тема"]);
+        assert_eq!(input_refs("${inputs.a} and ${inputs.topic}"), vec!["a", "topic"]);
         // dedup; ${steps.*} is not an input
         assert_eq!(input_refs("${inputs.a}${inputs.a}${steps.b.output}"), vec!["a"]);
         assert!(input_refs("no refs").is_empty());
@@ -2605,7 +2670,7 @@ mod ui_tests {
         let f = spec("name: x\ntasks:\n  - id: a\n    harness: echo\n    in: \"${inputs.prompt}\"\n");
         assert_eq!(missing_inputs(&f, &[]), vec!["prompt".to_string()]);
         // supplied by the flow's inputs block → fine
-        let f = spec("name: x\ninputs:\n  prompt: тема\ntasks:\n  - id: a\n    harness: echo\n    in: \"${inputs.prompt}\"\n");
+        let f = spec("name: x\ninputs:\n  prompt: topic\ntasks:\n  - id: a\n    harness: echo\n    in: \"${inputs.prompt}\"\n");
         assert!(missing_inputs(&f, &[]).is_empty());
         // supplied only at boot (--input) → fine
         assert!(missing_inputs(
@@ -2613,7 +2678,7 @@ mod ui_tests {
             &["prompt".to_string()]
         ).is_empty());
         // referenced in `out` too, not just `in`
-        let f = spec("name: x\ntasks:\n  - id: a\n    harness: echo\n    in: hi\n    out: \"по ${inputs.topic}\"\n");
+        let f = spec("name: x\ntasks:\n  - id: a\n    harness: echo\n    in: hi\n    out: \"about ${inputs.topic}\"\n");
         assert_eq!(missing_inputs(&f, &[]), vec!["topic".to_string()]);
     }
 
@@ -2687,13 +2752,115 @@ mod ui_tests {
         Emitter::new(st)
     }
 
+    #[tokio::test]
+    async fn corrected_model_rejoins_the_active_level_before_the_join() {
+        let dir = std::env::temp_dir().join(crate::artifacts::new_run_id("retry-in-level"));
+        let flows = dir.join("flows");
+        std::fs::create_dir_all(&flows).unwrap();
+        let state = Arc::new(AppState {
+            runs: Mutex::default(),
+            runs_root: dir.join("runs"),
+            flows_root: flows.clone(),
+            models_cache: Mutex::default(),
+            allowed_hosts: AllowedHosts::for_bind("127.0.0.1:8787".parse().unwrap()),
+        });
+        let mut flow = spec(r#"
+name: retry
+default_timeout_secs: 8
+watchdog: {retry: 0, nudges: 0, ask: false}
+harnesses:
+  probe:
+    command: [sh, -c, 'test "$2" != bad || exit 1; while test ! -f "$2"; do sleep 0.02; done; echo result-"$2"', probe]
+    model_flag: --model
+    prompt_via: stdin
+tasks:
+  - {id: producer, harness: probe, model: bad, in: produce, optional: true}
+  - {id: sibling, harness: probe, model: other, in: wait}
+  - {id: join, harness: echo, in: summarize, depends_on: [producer, sibling]}
+"#);
+        for task in &mut flow.tasks {
+            task.cwd = Some(dir.clone());
+        }
+        let yaml = spec_to_yaml(&flow).unwrap();
+        let path = flows.join("retry.yml");
+        std::fs::write(&path, &yaml).unwrap();
+        let run = boot_flow(state.clone(), &yaml, Some(path.clone()), vec![], None).await.unwrap();
+        let m = lookup(&state, &run).unwrap();
+        let status = |id: &str| m.emitter.snapshot().nodes[id].status;
+        let wait_for = |id: &'static str, wanted| async move {
+            tokio::time::timeout(std::time::Duration::from_secs(6), async {
+                while status(id) != wanted {
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+            }).await.expect("node did not reach expected status");
+        };
+        wait_for("producer", TaskStatus::Failed).await;
+        wait_for("sibling", TaskStatus::Running).await;
+        // The failed attempt may still be writing its manifest.
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while m.tracked.reserve_level_retry("producer").is_err() {
+                tokio::task::yield_now().await;
+            }
+        }).await.unwrap();
+        flow.tasks[0].model = Some("fixed".into());
+        let request = || Json(RerunReq {
+            node: "producer".into(),
+            task: Some(serde_json::to_value(&flow.tasks[0]).unwrap()),
+        });
+        let _ack = rerun(State(state.clone()), AxPath(run.clone()), request()).await.unwrap();
+        let duplicate = rerun(State(state.clone()), AxPath(run.clone()), request()).await.unwrap_err();
+        assert_eq!(duplicate.0, StatusCode::CONFLICT);
+        std::fs::write(dir.join("other"), "").unwrap();
+        wait_for("sibling", TaskStatus::Done).await;
+        assert_eq!(status("join"), TaskStatus::Pending);
+        std::fs::write(dir.join("fixed"), "").unwrap();
+        wait_for("join", TaskStatus::Done).await;
+        let snap = m.emitter.snapshot();
+        assert!(snap.nodes["join"].output.contains("result-fixed"));
+        assert!(snap.nodes["join"].output.contains("result-other"));
+        assert_eq!(snap.nodes["producer"].model.as_deref(), Some("fixed"));
+        assert_eq!(spec(&std::fs::read_to_string(path).unwrap()).tasks[0].model.as_deref(), Some("fixed"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn reloaded_pending_descendants_allow_retry_of_failed_root() {
+        let dir = std::env::temp_dir().join(crate::artifacts::new_run_id("reload-retry"));
+        let run_dir = dir.join("gate-1");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        let flow_path = dir.join("flow.yml");
+        std::fs::write(&flow_path, r#"
+name: recovered
+tasks:
+  - {id: a, harness: echo, in: root}
+  - {id: b, harness: echo, in: middle, depends_on: [a]}
+  - {id: c, harness: echo, in: end, depends_on: [b]}
+"#).unwrap();
+        let mut snapshot = gate_emitter([TaskStatus::Failed, TaskStatus::Pending, TaskStatus::Pending]).snapshot();
+        snapshot.flow_path = flow_path;
+        std::fs::write(run_dir.join("state.json"), serde_json::to_vec(&snapshot).unwrap()).unwrap();
+        let state = Arc::new(AppState {
+            runs: Mutex::default(),
+            runs_root: dir.clone(),
+            flows_root: dir.clone(),
+            models_cache: Mutex::default(),
+            allowed_hosts: AllowedHosts::for_bind("127.0.0.1:8787".parse().unwrap()),
+        });
+        let id = load_run(state.clone(), &run_dir, &dir).await.unwrap();
+        let em = lookup(&state, &id).unwrap().emitter;
+        assert_eq!(em.snapshot().nodes["b"].status, TaskStatus::Stale);
+        assert_eq!(em.snapshot().nodes["c"].status, TaskStatus::Stale);
+        claim_node(&em, "a", &[TaskStatus::Failed], NodeAction::Rerun).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn claim_gate_refuses_while_a_descendant_is_still_owed_work() {
         // M3: the owner's scenario — the first pass is mid-flight: `a`
         // finished, `b` is running, `c` is pending. Steering or re-running
         // `a` now must be refused, naming the in-flight descendant.
         let em = gate_emitter([TaskStatus::Done, TaskStatus::Running, TaskStatus::Pending]);
-        let e = claim_node(&em, "a", &[TaskStatus::Done], false).unwrap_err();
+        let e = claim_node(&em, "a", &[TaskStatus::Done], NodeAction::Steer).unwrap_err();
         assert!(e.contains("b") && e.contains("c"), "{e}");
         assert!(e.contains("downstream"), "{e}");
         // The refusal must leave the node exactly as it was.
@@ -2705,7 +2872,7 @@ mod ui_tests {
         // `b` is terminal but `c` — two levels down — is still Pending:
         // the walk is transitive, so `a` is still owed.
         let em = gate_emitter([TaskStatus::Done, TaskStatus::Done, TaskStatus::Pending]);
-        let e = claim_node(&em, "a", &[TaskStatus::Done], true).unwrap_err();
+        let e = claim_node(&em, "a", &[TaskStatus::Done], NodeAction::Rerun).unwrap_err();
         assert!(e.contains("c"), "{e}");
     }
 
@@ -2714,10 +2881,10 @@ mod ui_tests {
         // A fully settled run (all Done): free to steer/rerun, and the claim
         // flips the node to Running atomically.
         let em = gate_emitter([TaskStatus::Done, TaskStatus::Done, TaskStatus::Done]);
-        claim_node(&em, "a", &[TaskStatus::Done], true).unwrap();
+        claim_node(&em, "a", &[TaskStatus::Done], NodeAction::Rerun).unwrap();
         assert_eq!(em.snapshot().nodes["a"].status, TaskStatus::Running);
         // The second click loses the race — status is no longer in `from`.
-        let e = claim_node(&em, "a", &[TaskStatus::Done], true).unwrap_err();
+        let e = claim_node(&em, "a", &[TaskStatus::Done], NodeAction::Rerun).unwrap_err();
         assert!(e.contains("busy"), "{e}");
     }
 
@@ -2726,7 +2893,7 @@ mod ui_tests {
         // Failed/Skipped descendants are terminal: a settled-but-failed run
         // must stay re-runnable (the F03 owner's case), even deep.
         let em = gate_emitter([TaskStatus::Done, TaskStatus::Skipped, TaskStatus::Failed]);
-        claim_node(&em, "a", &[TaskStatus::Done], false).unwrap();
+        claim_node(&em, "a", &[TaskStatus::Done], NodeAction::Steer).unwrap();
     }
 
     #[test]
@@ -2753,7 +2920,7 @@ mod ui_tests {
             s.nodes.get_mut("a").unwrap().status = TaskStatus::Failed;
             s.nodes.get_mut("b").unwrap().status = TaskStatus::Skipped;
         });
-        let e = claim_node(&em, "b", &[TaskStatus::Done, TaskStatus::Stale, TaskStatus::Failed, TaskStatus::Skipped], true).unwrap_err();
+        let e = claim_node(&em, "b", &[TaskStatus::Done, TaskStatus::Stale, TaskStatus::Failed, TaskStatus::Skipped], NodeAction::Rerun).unwrap_err();
         assert!(e.contains("unfinished dependencies: a"), "{e}");
         // Refused before the flip: still Skipped, nothing claimed.
         assert_eq!(em.snapshot().nodes["b"].status, TaskStatus::Skipped);
@@ -2782,7 +2949,7 @@ mod ui_tests {
             s.nodes.get_mut("b").unwrap().status = TaskStatus::Done;
             s.nodes.get_mut("c").unwrap().status = TaskStatus::Done;
         });
-        claim_node(&em, "b", &[TaskStatus::Done], true).unwrap();
+        claim_node(&em, "b", &[TaskStatus::Done], NodeAction::Rerun).unwrap();
     }
 
     #[test]
@@ -2792,11 +2959,11 @@ mod ui_tests {
         // descendant rule still applies. Here `b` (ancestor of c, pending)
         // is Stale and `c` is Done: steering `c` is fine.
         let em = gate_emitter([TaskStatus::Stale, TaskStatus::Stale, TaskStatus::Done]);
-        claim_node(&em, "c", &[TaskStatus::Done], false).unwrap();
+        claim_node(&em, "c", &[TaskStatus::Done], NodeAction::Steer).unwrap();
         // …while steering `b` is refused for the same reason it always was:
         // `c` is not what's owed — nothing downstream is — but `b`'s own
         // status is Stale, outside the steer's from-set.
-        let e = claim_node(&em, "b", &[TaskStatus::Done], false).unwrap_err();
+        let e = claim_node(&em, "b", &[TaskStatus::Done], NodeAction::Steer).unwrap_err();
         assert!(e.contains("busy"), "{e}");
     }
 
@@ -2806,9 +2973,10 @@ mod ui_tests {
     // on a live console below.
     fn chat_req(cwd: Option<&str>) -> ChatRequest {
         ChatRequest {
+            graph: None, attached_run: None,
             harness: "coddy".into(),
             model: "m".into(),
-            prompt: "привет".into(),
+            prompt: "hi".into(),
             cwd: cwd.map(str::to_string),
             skills: Some(vec![]),
         }
@@ -2828,18 +2996,18 @@ mod ui_tests {
         assert_eq!(got, tmp.canonicalize().unwrap());
         // A missing path names both the typed value and the resolved one.
         let e = resolve_project_dir(tmp.join("nope").to_str().unwrap()).unwrap_err();
-        assert!(e.contains("недоступна") && e.contains("nope"), "{e}");
+        assert!(e.contains("unavailable") && e.contains("nope"), "{e}");
         // A regular file is not a project folder.
         let f = tmp.join("file.txt");
         std::fs::write(&f, b"x").unwrap();
         let e = resolve_project_dir(f.to_str().unwrap()).unwrap_err();
-        assert!(e.contains("не каталог") && e.contains("file.txt"), "{e}");
+        assert!(e.contains("not a directory") && e.contains("file.txt"), "{e}");
         std::fs::remove_dir_all(&tmp).ok();
     }
 
     #[test]
     fn chat_flow_without_a_folder_keeps_the_classic_shape() {
-        let y = chat_flow_yaml(&chat_req(None), &[], "OUT", None).unwrap();
+        let y = chat_flow_yaml(&chat_req(None), &[], "OUT", None, "").unwrap();
         let f: Flow = serde_yaml::from_str(&y).unwrap();
         assert!(f.cwd.is_none(), "no cwd without a folder: {y}");
         assert!(f.tasks[0].workspace.is_none(), "task keeps its isolated work dir: {y}");
@@ -2853,7 +3021,7 @@ mod ui_tests {
             epoch_secs()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let y = chat_flow_yaml(&chat_req(Some(dir.to_str().unwrap())), &[], "OUT", Some(&dir)).unwrap();
+        let y = chat_flow_yaml(&chat_req(Some(dir.to_str().unwrap())), &[], "OUT", Some(&dir), "").unwrap();
         let f: Flow = serde_yaml::from_str(&y).unwrap();
         assert_eq!(f.cwd.as_deref(), Some(dir.as_path()));
         assert_eq!(f.tasks[0].workspace, Some(crate::config::Workspace::Flow));

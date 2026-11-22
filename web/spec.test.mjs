@@ -227,6 +227,7 @@ const FL = (tasks, over) => Object.assign({ name: 'f', inputs: {}, harnesses: {}
   }
   const selectTask = () => {};
   const setCfg = () => {};
+  const switchNodeInput = () => {};
   const autogrow = () => {};
   const assignAutoPositions = () => {};
   const touch = () => {};
@@ -241,10 +242,11 @@ ${fn('blankSpec')}
 ${fn('normaliseFlow')}
 ${fn('sameVal')}
 ${fn('mergeGraphIntoCanvas')}
+${fn('deselect')}
 ${fn('leaveChat')}
 ${fn('openChat')}
 ${fn('placeProposalOnCanvas')}
-;({ blankSpec, openChat, placeProposalOnCanvas })`);
+;({ blankSpec, openChat, leaveChat, deselect, placeProposalOnCanvas })`);
   const node = (p) => ({ id: 'chat', proposal: p });
 
   // 1. A valid proposal lands with the chat LEFT OPEN: the SSE stream, the
@@ -295,6 +297,7 @@ ${fn('placeProposalOnCanvas')}
   spec.current = mod.blankSpec();
   mod.openChat('run-2');
   chat.events.send({ nodes: { chat: node(first) } });   // turn 1: edge-less graph placed
+  mod.leaveChat();
   mod.openChat('run-2');                                // the operator leaves and reopens
   chat.events.send({ nodes: { chat: node(revised) } }); // the revision arrives now
   ok('placement: a revision that arrived while detached lands its edge on reopen',
@@ -303,6 +306,63 @@ ${fn('placeProposalOnCanvas')}
   ok('placement: reopen keeps the operator-side layout',
     spec.current.tasks[1].pos.x === 404 && spec.current.tasks[1].pos.y === 216,
     JSON.stringify(spec.current.tasks[1].pos));
+  // A proposal arriving while a block is selected must not take the panel
+  // away or invalidate the selected task object while the operator edits it.
+  editTask = spec.current.tasks[0];
+  const subscribed = chat.events;
+  $('#planner-msg').value = 'continue this thought';
+  chat.events.send({ nodes: { chat: node(P({hash: 'h4', spec: graph('update', [])})) } });
+  ok('a planner event keeps the selected block', editTask === spec.current.tasks[0]);
+  mod.deselect();
+  ok('background returns to the same planner and applies its pending proposal',
+    !editTask && chat.events === subscribed && !subscribed.closed && chat.mergedHash === 'h4');
+  ok('node navigation preserves the planner draft', $('#planner-msg').value === 'continue this thought');
+
+}
+
+// ---- model fleet helpers (the ⚓ Fleet picker) ------------------------------
+{
+  const F2 = eval(`
+${fn('fleetKey')}
+${fn('fleetParsed')}
+${fn('fleetWire')}
+;({ fleetKey, fleetParsed, fleetWire })`);
+
+  const saved = F2.fleetParsed({
+    models: [
+      { harness: ' coddy ', model: ' kimi ' },     // trimmed
+      { harness: 'codex', model: 'gpt-6.2-sol' },
+      { harness: 'coddy', model: 'kimi' },         // duplicate after trim
+      { harness: 'coddy', model: '' },             // junk: empty model
+      null,                                        // junk row
+      { harness: 5, model: 'x' },                  // junk: non-string
+    ],
+  });
+  ok('fleet: trims, drops junk, dedupes, keeps order',
+    JSON.stringify(F2.fleetWire(saved)) ===
+    JSON.stringify({ models: [
+      { harness: 'coddy', model: 'kimi' },
+      { harness: 'codex', model: 'gpt-6.2-sol' },
+    ]}),
+    JSON.stringify(F2.fleetWire(saved)));
+
+  ok('fleet: absent/empty payload is an empty map',
+    F2.fleetParsed(null).size === 0 && F2.fleetParsed({}).size === 0);
+
+  // The pair is the identity: the same model id on two harnesses is two picks.
+  const both = F2.fleetParsed({ models: [
+    { harness: 'coddy', model: 'kimi' },
+    { harness: 'codex', model: 'kimi' },
+  ]});
+  ok('fleet: same model on two harnesses is two picks', both.size === 2);
+
+  // wire → parse round-trips: what Save sends is what a reload reads back.
+  const again = F2.fleetParsed(F2.fleetWire(both));
+  ok('fleet: wire→parse round-trips',
+    again.size === 2 &&
+    again.get(F2.fleetKey('coddy', 'kimi')).model === 'kimi' &&
+    again.get(F2.fleetKey('codex', 'kimi')).harness === 'codex',
+    JSON.stringify(F2.fleetWire(again)));
 }
 
 console.log(`spec.test: ${passed} passed, ${failed} failed`);
