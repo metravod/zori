@@ -12,8 +12,8 @@ Zori is a Rust CLI and an embedded local web console. A YAML flow connects tasks
 
 ## Where it lives
 - [Public repository](https://github.com/metravod/zori), default branch main · how: gh repo view metravod/zori · seen 2026-11-20
-- [Release v0.1.0](https://github.com/metravod/zori/releases/tag/v0.1.0), four native archives and SHA256SUMS · how: gh release view v0.1.0 --repo metravod/zori · seen 2026-11-20
-- [Homebrew formula](https://github.com/metravod/homebrew-tap/blob/main/Formula/zori.rb), version 0.1.0 · how: brew info metravod/tap/zori · seen 2026-11-20
+- [Release v0.2.0](https://github.com/metravod/zori/releases/tag/v0.2.0), four native archives and SHA256SUMS · how: gh release view v0.2.0 --repo metravod/zori · seen 2026-11-22
+- [Homebrew formula](https://github.com/metravod/homebrew-tap/blob/main/Formula/zori.rb), version 0.2.0 · how: brew info metravod/tap/zori · seen 2026-11-22
 
 ## Now
 **Verified 2026-11-22:** Chromium exercised both node retry buttons after a model failure during a parallel level. The join waited for the corrected attempt and received both branch outputs. See the [console guide](../docs/guide.md).
@@ -25,7 +25,7 @@ Zori is a Rust CLI and an embedded local web console. A YAML flow connects tasks
 **Verified 2026-11-22:** the console watchdog recognizes Coddy's per-turn step limit and requests one final report in the same session when a nudge is available. A console run with the installed Coddy CLI and a local test provider hit a one-step limit, retained the tool result across turns and passed the final report to the dependent task. See the [watchdog guide](../docs/guide.md#the-watchdog-nudges-retries-and-questions-to-you).
 **Verified 2026-11-22:** a planner chat started with a project folder runs its agent process in that folder from the first message and on every continuation (live check on a temp project: both attempts' `meta.json` cwd, relative-path marker read); chats without a folder keep the isolated work dir.
 **Verified 2026-11-22:** the combined planner cwd and canvas path reaches the runner through the console router with a deterministic planner process. The three client failures it exposed (chat closing on a valid proposal, a revision's edge lost on reopen, a stale reply reverting a pre-send edit) are fixed the same day: the merge base travels with the proposal (`FlowProposal.base`) and placement keeps the chat alive, each reproduced by a regression test. See [combined verification](threads/planner-canvas-verification.md).
-**Verified:** v0.1.0 passed the Rust and browser-side suites and an echo flow on macOS and GNU/Linux, on both arm64 and x86_64. All four published archives matched the checksum manifest. A Homebrew installation on Apple Silicon ran the README example and served the embedded console over HTTP. See the [release run](https://github.com/metravod/zori/actions/runs/44761947645) and [tap update](https://github.com/metravod/homebrew-tap/actions/runs/44768420484).
+**Verified:** v0.2.0 passed the Rust and browser-side suites and an echo flow on macOS and GNU/Linux, on both arm64 and x86_64. All four published archives matched the checksum manifest; the macOS arm64 archive ran `zori 0.2.0` and the smoke-echo flow locally. `brew upgrade metravod/tap/zori` installed 0.2.0 on Apple Silicon. See the [release run](https://github.com/metravod/zori/actions/runs/45069448243) and [tap update](https://github.com/metravod/homebrew-tap/actions/runs/45070147181). v0.1.0 passed the same bar on [its release run](https://github.com/metravod/zori/actions/runs/44761947645).
 **Not verified:** Full interactive planner-to-run coverage with real agents remains open. See [console verification](threads/console-verification.md).
 
 ## Next

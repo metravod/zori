@@ -1,5 +1,7 @@
 # Log
 
+- 2026-11-22 · devin/SWE-2 · released v0.2.0: committed the fleet/harnesses/i18n/watchdog batch as b889876, pushed main and the tag, release workflow green on all four targets; verified all four archives against SHA256SUMS, ran the macOS arm64 binary (`zori 0.2.0` + smoke-echo), dispatched the tap's Update Zori and `brew upgrade` installed 0.2.0 → [release](https://github.com/metravod/zori/releases/tag/v0.2.0)
+
 - 2026-11-22 · codex/GPT-6 · enabled retrying a failed node with an edited model during its active level, kept the join behind the retry, and made pending nodes recoverable after server restart. Verified both controls in Chromium with a local test harness → [console guide](../docs/guide.md)
 
 - 2026-11-22 · opencode/GLM-5.3 · added the personal harness store `~/.zori/harnesses.yml` (same override schema as a flow's `harnesses:` block; new `prompt_arg` field) with three-layer resolution built-in → personal → flow: a personally-added CLI appears at once in `zori harnesses`/`models`/`catalog`, `/api/harnesses`, the console picker, the Fleet dialog and the planner brief; plumbing ids prompt/echo are refused, malformed files warn without failing. Devin wired as the first resident (PONG-verified through a real zori run; SWE-2 models are Pro-gated on this account — noted in model_notes); `zori harnesses` now marks source (builtin/personal) and PATH presence; 204 Rust + 116 web checks green → [guide](../docs/guide.md#adding-a-harness-the-personal-store), decision D11
