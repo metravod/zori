@@ -188,6 +188,23 @@ pub struct FlowProposal {
     /// re-reading the YAML.
     #[serde(default)]
     pub levels: Vec<Vec<String>>,
+    /// The parsed graph as JSON when `valid` — the same shape `/api/flows/open`
+    /// returns, so the console can put the proposal straight onto the canvas
+    /// without re-parsing the YAML. `None` on an invalid proposal (there is no
+    /// graph to show) and for proposals stored by older builds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec: Option<serde_json::Value>,
+    /// The graph this proposal merges against on the canvas: the agent's last
+    /// accepted graph (the previous valid proposal's `spec`), or — for a first
+    /// proposal — the board the operator shipped with the turn. The console's
+    /// three-way merge needs the common ancestor: with the raw turn board as
+    /// the base, an edit made BEFORE sending would sit inside the base and a
+    /// reply echoing the pre-edit value could revert it; after a chat reopen
+    /// the client has no board history at all. `None` on invalid proposals and
+    /// for proposals stored by older builds (the client falls back to its
+    /// send-time snapshot).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<serde_json::Value>,
     /// How many auto-fix continuation turns zori has spent asking the model to
     /// repair an invalid block. Bounded so a looping model can't spin the run.
     pub fix_rounds: u32,

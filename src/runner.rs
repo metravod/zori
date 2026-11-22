@@ -418,7 +418,7 @@ impl RunArtifacts {
 /// a relative flag therefore doubles the path and the CLI dies instantly with
 /// ENOENT (the live zori-review failure of 2026-11-17: codex was pointed at
 /// `<work>/zori-runs/<run>/tasks/<id>/work`, which never exists).
-fn effective_cwd(
+pub(crate) fn effective_cwd(
     flow_cwd: &Option<PathBuf>,
     task: &Task,
     work: Option<&Path>,
@@ -1354,6 +1354,15 @@ pub struct TrackedRun {
     overrides: Arc<std::sync::RwLock<HashMap<String, Task>>>,
     /// Wakes waiters after an addressed answer is committed to the snapshot.
     answers: Arc<tokio::sync::Notify>,
+    /// The live canvas graph the operator last sent with a chat turn (steer or
+    /// an ASK answer). The planner's next prompt is built on THIS, not on the
+    /// stale graph still in its session, so a node the operator dragged or a
+    /// model they switched while the agent was thinking is not rolled back on
+    /// the next proposal. Behind an `Arc` so the driver clones and the exec
+    /// loop (which builds the ASK-answer resume after `answer_question` has
+    /// returned) all see the same latest board. `None` until a turn carries
+    /// one; only the chat planner populates it.
+    canvas: Arc<StdMutex<Option<serde_json::Value>>>,
 }
 
 impl TrackedRun {
@@ -1370,6 +1379,14 @@ impl TrackedRun {
             .with_context(|| format!("creating run dir {}", out_dir.display()))?;
         std::fs::create_dir_all(&sessions_dir)
             .with_context(|| format!("creating sessions dir {}", sessions_dir.display()))?;
+        // Absolute from here on. The executor hands this path to the agent CLI
+        // (coddy `-sessions-dir`), which resolves it against ITS OWN process
+        // cwd — and the runs root is often relative (`zori-runs`). A task in
+        // its isolated work dir then grew a nested sessions tree under it, and
+        // a `workspace: flow` task (a chat planner in the project folder)
+        // would drop the sessions INTO the user's project. The dir exists now,
+        // so `absolute` also canonicalises it.
+        let sessions_dir = artifacts::absolute(&sessions_dir);
         let default_timeout = flow_default_timeout(&flow);
         let inputs = resolved_inputs(&flow, extra_inputs);
         let art = RunArtifacts::adopt(&out_dir, &flow, &plan, &inputs)?;
@@ -1383,6 +1400,7 @@ impl TrackedRun {
             art,
             overrides: Arc::new(std::sync::RwLock::new(HashMap::new())),
             answers: Arc::new(tokio::sync::Notify::new()),
+            canvas: Arc::new(StdMutex::new(None)),
         })
     }
 
@@ -1607,7 +1625,43 @@ impl TrackedRun {
     /// with it, record the agent's reply, and mark downstream nodes `Stale` so
     /// the human re-runs them (their input just changed). The steering turn is
     /// recorded even if the resume fails, so the transcript tells the truth.
-    pub async fn steer(&self, emitter: &Emitter, id: &str, text: &str) -> Result<()> {
+    /// Remember the operator's live canvas, sent with a chat turn. Only an
+    /// actual graph overwrites it — a turn that omits the field (an older
+    /// client, or a steer of a non-chat node) must not wipe a board we already
+    /// know, so the planner keeps seeing the last real state.
+    fn set_canvas(&self, graph: Option<serde_json::Value>) {
+        if let Some(g) = graph {
+            *self.canvas.lock().unwrap_or_else(|p| p.into_inner()) = Some(g);
+        }
+    }
+
+    /// The canvas block appended to the planner's next prompt, or empty when no
+    /// operator has sent a board yet. `pos` is stripped: it is pure layout the
+    /// model cannot act on, and dropping it keeps the block small. The wording
+    /// says plainly that the operator may have edited this by hand, so the
+    /// agent builds on it instead of proposing the graph still in its session.
+    fn graph_context(&self) -> String {
+        let value = self.canvas.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let Some(mut v) = value else { return String::new(); };
+        if let Some(tasks) = v.get_mut("tasks").and_then(|t| t.as_array_mut()) {
+            for t in tasks.iter_mut() {
+                if let Some(obj) = t.as_object_mut() {
+                    obj.remove("pos");
+                }
+            }
+        }
+        match serde_json::to_string_pretty(&v) {
+            Ok(json) => format!(
+                "\n\nТекущий граф на канвасе (оператор мог править его вручную — \
+                 переставить узлы, сменить модель, добавить зависимость). Опирайся на \
+                 него, а не на граф из истории, и верни полный обновлённый граф:\n\
+                 ```json\n{json}\n```"
+            ),
+            Err(_) => String::new(),
+        }
+    }
+
+    pub async fn steer(&self, emitter: &Emitter, id: &str, text: &str, graph: Option<serde_json::Value>) -> Result<()> {
         install_death_handlers();
         let task = self.task(id).ok_or_else(|| anyhow!("no such task '{id}'"))?;
 
@@ -1619,11 +1673,19 @@ impl TrackedRun {
             .and_then(|n| n.session.clone())
             .ok_or_else(|| anyhow!("task '{id}' has no resumable session to steer"))?;
 
+        // The operator may have moved a node, switched a model or wired a
+        // dependency since the last turn; remember the board so the prompt we
+        // send is built on it, not on the graph still stuck in the session.
+        self.set_canvas(graph);
         emitter.append_turn(id, Role::Human, text);
         emitter.set_status(id, TaskStatus::Running);
 
+        // The transcript keeps the operator's words verbatim; only the model's
+        // prompt gains the canvas block, so what the operator reads back stays
+        // exactly what they typed.
+        let prompt = format!("{text}{}", self.graph_context());
         let outcome = self
-            .exec(emitter, &task, ExecMode::Resume(session.clone(), text.to_string()))
+            .exec(emitter, &task, ExecMode::Resume(session.clone(), prompt))
             .await;
         match outcome {
             Ok(()) => {
@@ -1877,7 +1939,12 @@ impl TrackedRun {
                     let Some(answer) = self.wait_for_answers(emitter, &task.id, settings.ask_timeout_secs).await else {
                         break;
                     };
-                    mode = ExecMode::Resume(n.session.expect("resumable checked"), answer);
+                    // The answer is a fresh planner turn too, so it reasons from
+                    // the board the operator holds now (`answer_question` stored
+                    // it before we wake here). Empty for a plain node that never
+                    // sent a canvas, so this is a no-op off the chat path.
+                    let prompt = format!("{answer}{}", self.graph_context());
+                    mode = ExecMode::Resume(n.session.expect("resumable checked"), prompt);
                     continue;
                 }
                 Verdict::Nudge(kind) if nudges_left > 0 && resumable(&n.session) => {
@@ -1939,6 +2006,19 @@ impl TrackedRun {
         let prior_fix = node.proposal.as_ref().map(|p| p.fix_rounds).unwrap_or(0);
         let resumable_here = resumable(&node.session);
         let session = node.session.clone();
+        // The three-way-merge base the console needs: what both sides last
+        // agreed on. Prefer the agent's last accepted graph (the previous
+        // valid proposal's spec) — the operator's edits made after it was
+        // placed, before sending this turn or during the reply, then read as
+        // operator-owned, so a reply echoing pre-edit values cannot revert
+        // them. Without an earlier accepted proposal the board shipped with
+        // this turn is the only common view (there is nothing to protect
+        // against: the agent has never spoken in graphs).
+        let base = node
+            .proposal
+            .as_ref()
+            .and_then(|p| p.spec.clone())
+            .or_else(|| self.canvas.lock().expect("canvas lock").clone());
 
         if proposal.valid {
             emitter.mutate(move |st| {
@@ -1950,6 +2030,8 @@ impl TrackedRun {
                         errors: Vec::new(),
                         warnings: proposal.warnings,
                         levels: proposal.levels,
+                        spec: proposal.spec,
+                        base,
                         fix_rounds: prior_fix,
                         status: ProposalStatus::Proposed,
                         run_id: None,
@@ -1987,6 +2069,8 @@ impl TrackedRun {
                     errors: proposal.errors,
                     warnings: Vec::new(),
                     levels: Vec::new(),
+                    spec: None,
+                    base: None,
                     fix_rounds: if repair { prior_fix + 1 } else { prior_fix },
                     status: ProposalStatus::Proposed,
                     run_id: None,
@@ -2045,11 +2129,16 @@ impl TrackedRun {
 
     /// Legacy clients can answer a single parked question without its ID.
     pub async fn answer(&self, emitter: &Emitter, id: &str, text: &str) -> Result<()> {
-        self.answer_question(emitter, id, None, text)
+        self.answer_question(emitter, id, None, text, None)
     }
 
-    pub fn answer_question(&self, emitter: &Emitter, id: &str, question_id: Option<usize>, text: &str) -> Result<()> {
+    pub fn answer_question(&self, emitter: &Emitter, id: &str, question_id: Option<usize>, text: &str, graph: Option<serde_json::Value>) -> Result<()> {
         anyhow::ensure!(!text.trim().is_empty(), "empty answer");
+        // Remember the board BEFORE waking the parked loop: its ASK-answer
+        // resume reads `graph_context()` the instant `notify_waiters` lands, so
+        // the canvas must already be stored. Same rule as `steer` — an absent
+        // graph keeps the last known board rather than clearing it.
+        self.set_canvas(graph);
         let mut accepted = false;
         emitter.mutate(|st| {
             let Some(n) = st.nodes.get_mut(id) else { return };
@@ -2939,8 +3028,8 @@ echo '{"type":"turn.completed"}'
             let q = &live.nodes["a"].questions;
             assert_eq!(live.nodes["a"].status, TaskStatus::Running);
             assert_eq!(q[0].options, ["CSV", "JSON"]);
-            tr.answer_question(&em, "a", Some(q[1].id), "вторая").unwrap();
-            assert!(tr.answer_question(&em, "a", Some(q[1].id), "duplicate").is_err());
+            tr.answer_question(&em, "a", Some(q[1].id), "вторая", None).unwrap();
+            assert!(tr.answer_question(&em, "a", Some(q[1].id), "duplicate", None).is_err());
             std::fs::write(&gate, "").unwrap();
             while em.snapshot().nodes["a"].status != TaskStatus::Waiting {
                 snapshots.recv().await.unwrap();
@@ -2949,7 +3038,7 @@ echo '{"type":"turn.completed"}'
             let snap = em.snapshot();
             assert_eq!(snap.nodes["a"].questions[1].answer.as_deref(), Some("вторая"));
             assert_eq!(snap.nodes["b"].status, TaskStatus::Pending);
-            tr.answer_question(&em, "a", Some(q[0].id), "CSV").unwrap();
+            tr.answer_question(&em, "a", Some(q[0].id), "CSV", None).unwrap();
         };
         tokio::time::timeout(Duration::from_secs(8), async {
             tokio::join!(tr.run_all(&em), operator);
@@ -3502,7 +3591,7 @@ echo '{"type":"turn.completed"}'
         let (tr, em) = tracked_fixture(&dir).await;
         tr.run_all(&em).await;
 
-        tr.steer(&em, "a", "actually use the word ZEBRA").await.unwrap();
+        tr.steer(&em, "a", "actually use the word ZEBRA", None).await.unwrap();
 
         let s = em.snapshot();
         // a gained [human, agent] turns and its output is the steer reply.
@@ -3521,7 +3610,7 @@ echo '{"type":"turn.completed"}'
         let dir = std::env::temp_dir().join(format!("zori-trk-rerun-{}", now_secs()));
         let (tr, em) = tracked_fixture(&dir).await;
         tr.run_all(&em).await;
-        tr.steer(&em, "a", "REVISED").await.unwrap();
+        tr.steer(&em, "a", "REVISED", None).await.unwrap();
         assert_eq!(em.snapshot().nodes["b"].status, TaskStatus::Stale);
 
         tr.rerun_stale(&em).await;
@@ -3829,8 +3918,64 @@ echo '{"type":"turn.completed"}'
 
     const VALID_GRAPH: &str =
         "вот согласованный граф:\n```zori-flow\nname: ok\ntasks:\n  - id: a\n    harness: echo\n    in: hi\n```";
+    const VALID_GRAPH_V2: &str =
+        "```zori-flow\nname: ok\ntasks:\n  - id: a\n    harness: echo\n    in: hi\n  - id: b\n    harness: echo\n    in: yo\n    depends_on: [a]\n```";
     const BAD_GRAPH: &str =
         "```zori-flow\nname: bad\ntasks:\n  - id: a\n    harness: nosuch-harness\n    in: hi\n```";
+
+    #[tokio::test]
+    async fn gate_first_proposal_base_is_the_board_shipped_with_the_turn() {
+        let dir = std::env::temp_dir().join(format!("zori-gate-base1-{}", now_secs()));
+        let (tr, em, task) = chat_gate_fixture(&dir).await;
+        // The operator shipped a board with the turn (a steer carries `graph`);
+        // the runner parks it in `canvas` for exactly this moment.
+        let shipped = serde_json::json!({
+            "name": "shipped", "tasks": [
+                { "id": "pre", "harness": "echo", "in": "op-edited" }
+            ]
+        });
+        *tr.canvas.lock().unwrap() = Some(shipped.clone());
+        set_chat_reply(&em, VALID_GRAPH);
+        tr.proposal_gate(&em, &task).await;
+        let p = em.snapshot().nodes["chat"].proposal.clone().expect("proposal stored");
+        assert_eq!(
+            p.base.as_ref(),
+            Some(&shipped),
+            "a first proposal merges against the board shipped with the turn"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn gate_later_proposal_base_is_the_prior_accepted_graph() {
+        let dir = std::env::temp_dir().join(format!("zori-gate-base2-{}", now_secs()));
+        let (tr, em, task) = chat_gate_fixture(&dir).await;
+        // Turn 1: a valid proposal is accepted (its spec becomes the agent's view).
+        set_chat_reply(&em, VALID_GRAPH);
+        tr.proposal_gate(&em, &task).await;
+        let first = em.snapshot().nodes["chat"].proposal.clone().expect("first proposal");
+        assert!(first.base.is_none(), "no canvas shipped with this turn");
+
+        // Turn 2 ships a NEWER board (the operator edited before sending), but
+        // the merge base must stay the agent's last accepted graph: an edit
+        // made before sending is operator-owned and a reply echoing the
+        // pre-edit value must not be able to revert it.
+        let shipped = serde_json::json!({
+            "name": "shipped", "tasks": [
+                { "id": "a", "harness": "echo", "in": "OPERATOR-EDIT" }
+            ]
+        });
+        *tr.canvas.lock().unwrap() = Some(shipped);
+        set_chat_reply(&em, VALID_GRAPH_V2);
+        tr.proposal_gate(&em, &task).await;
+        let second = em.snapshot().nodes["chat"].proposal.clone().expect("second proposal");
+        assert_eq!(
+            second.base.as_ref(),
+            first.spec.as_ref(),
+            "the second proposal merges against the first proposal's spec, not the shipped board"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[tokio::test]
     async fn gate_stores_valid_proposal_and_parks_it() {
@@ -3889,6 +4034,8 @@ echo '{"type":"turn.completed"}'
                 errors: vec!["x".into()],
                 warnings: vec![],
                 levels: vec![],
+                spec: None,
+                base: None,
                 fix_rounds: crate::proposal::MAX_FIX_ROUNDS,
                 status: ProposalStatus::Proposed,
                 run_id: None,
@@ -4101,6 +4248,32 @@ mod tests {
         // A bare `~` is the home itself, same value `absolute()` produces.
         let (bare, _) = effective_cwd(&Some(PathBuf::from("~")), &t, None).expect("cwd");
         assert_eq!(bare, artifacts::absolute(Path::new("~")));
+    }
+
+    /// The tracked executor hands `sessions_dir` to the agent CLI (coddy
+    /// `-sessions-dir`), which resolves it against ITS OWN process cwd — and
+    /// the runs root is often relative (`zori-runs`). A relative stored path
+    /// grew a nested sessions tree under a task's work dir, and a
+    /// `workspace: flow` chat in a project folder would drop the sessions
+    /// INTO the operator's project. `TrackedRun::new` must store absolute.
+    #[test]
+    fn tracked_sessions_dir_is_absolute_even_from_a_relative_root() {
+        let root = test_runs_root();
+        // A genuinely relative path to the same directory — no chdir (tests
+        // run in parallel; the process cwd is global).
+        let cwd = std::env::current_dir().unwrap();
+        let mut rel = PathBuf::new();
+        for _ in cwd.ancestors().skip(1) {
+            rel.push("..");
+        }
+        rel.extend(root.strip_prefix(std::path::Path::new("/")).unwrap().components());
+        assert!(!rel.is_absolute(), "fixture must be relative: {}", rel.display());
+        let flow = sh_flow("sessions-abs", "only", "echo hi");
+        let p = plan(&flow).expect("plan");
+        let tr = TrackedRun::new(flow, p, &[], root.join("run"), rel).expect("tracked run");
+        assert!(tr.sessions_dir.is_absolute(), "stored absolute: {}", tr.sessions_dir.display());
+        assert_eq!(tr.sessions_dir, root.canonicalize().unwrap());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Dependency edges carry data: a dep the `in` text does not reference

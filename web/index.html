@@ -559,7 +559,13 @@ const $ = (s) => document.querySelector(s);
 const COL_W = 250, PAD = 30, GAP = 24;
 const state = { runs: [], runId: null, snap: null, es: null };
 const chat = { run: null, events: null, node: null, connected: false, error: '', sending: false,
-  request: 0, busy: false, blockDraft: '', drafts: new Map() };
+  request: 0, busy: false, blockDraft: '', drafts: new Map(),
+  // canvasBase: fallback merge base (the board at send time) for proposals
+  // stored by older builds — new proposals carry their own base (p.base);
+  // mergedHash: the proposal hash already laid on the canvas, so an SSE tick
+  // that only flips status never re-merges and undoes edits made after the
+  // first placement. Both reset when a chat is opened.
+  canvasBase: null, mergedHash: null };
 
 
 // ---- API -----------------------------------------------------------------
@@ -735,9 +741,18 @@ function questionCards(box, nodes, currentRun = () => state.runId) {
       if (form.dataset.sending || !text.trim() || currentRun() !== run) return;
       form.dataset.sending = '1';
       try {
-        await post('/api/runs/' + encodeURIComponent(run) + '/answer', {
-          node: n.id, question_id: q.id, text
-        });
+        // A chat answer is a new agent turn, so the board the operator sees now
+        // becomes both the three-way-merge base and the graph the planner
+        // reasons from — same contract as sendChat, so a hand-edit made while
+        // the agent was asking its question still reaches the next proposal.
+        // Only the chat node carries it; other nodes' answers stay byte-for-byte.
+        const body = { node: n.id, question_id: q.id, text };
+        if (n.id === 'chat') {
+          const graph = specForServer();
+          chat.canvasBase = JSON.parse(JSON.stringify(graph));
+          body.graph = graph;
+        }
+        await post('/api/runs/' + encodeURIComponent(run) + '/answer', body);
         feedback.textContent = 'Ответ принят';
       } catch (e) {
         delete form.dataset.sending;
@@ -851,8 +866,13 @@ function paintProposal(card, p, n, run) {
       for (const k in fields) { const v = fields[k].value.trim(); if (v) inputs[k] = v; }
       card.dataset.sending = '1'; runBtn.disabled = true; note.textContent = 'запускаю…';
       try {
+        // Launch the board in front of the operator, not the YAML the agent
+        // first wrote: they may have dragged a node, switched a model or wired
+        // a dependency by hand since the proposal landed. The server validates
+        // this copy like a canvas ▶ Run and boots it; the hash guard above still
+        // pins the launch to the proposal they confirmed.
         const res = await post('/api/runs/' + encodeURIComponent(run) + '/run-proposal',
-          { node: n.id, hash: p.hash, inputs });
+          { node: n.id, hash: p.hash, inputs, flow: specForServer() });
         note.textContent = '';
         if (res && res.run_id) {
           const link = document.createElement('button');
@@ -2170,6 +2190,92 @@ function normaliseFlow(f) {
   return s;
 }
 
+// Deep, order-insensitive equality for spec values (objects, arrays, scalars).
+// Used by the proposal merge to tell "the operator changed this field since the
+// last turn" from "it is still what the agent was shown". Key order in `args` /
+// `env` must not read as a change, so objects compare by their sorted keys.
+function sameVal(a, b) {
+  if (a === b) return true;
+  if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object') return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a)) {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (!sameVal(a[i], b[i])) return false;
+    return true;
+  }
+  const ka = Object.keys(a).sort(), kb = Object.keys(b).sort();
+  if (ka.length !== kb.length) return false;
+  for (let i = 0; i < ka.length; i++) {
+    if (ka[i] !== kb[i] || !sameVal(a[ka[i]], b[ka[i]])) return false;
+  }
+  return true;
+}
+
+// Merge an agent proposal onto the operator's live canvas, three-way so BOTH
+// hands are kept. `base` is the canvas as it stood when the operator sent the
+// turn that produced this proposal (what the agent was reasoning about);
+// `canvas` is the board now — possibly edited DURING the agent's reply;
+// `proposal` is the agent's new graph, normalised server-side.
+//
+// Per node, keyed by id:
+//   • position is ALWAYS the operator's — the agent never owns the layout, so a
+//     dragged node keeps its spot no matter what the proposal says.
+//   • every other field goes to whoever moved it last: if it differs from
+//     `base` the operator touched it since the turn → keep the canvas value;
+//     otherwise the agent is the only one who changed it → take the proposal.
+//     A node the operator added after the turn (not in `base`) is untouched.
+//   • dependencies follow the same rule, so "operator moved a node + changed a
+//     model, then asked the agent to add a dependency" keeps all three: the
+//     model/position are operator-side, the new edge is agent-side.
+// Nodes the agent introduced are appended (position left null → auto-placed by
+// the caller). A node in `base` the agent dropped stays dropped; a node the
+// operator added this turn is never dropped by the agent.
+function mergeGraphIntoCanvas(baseIn, canvas, proposal) {
+  const EDIT_FIELDS = ['harness', 'model', 'in', 'out', 'depends_on', 'optional',
+    'cwd', 'timeout_secs', 'args', 'env', 'watchdog', 'skills'];
+  const FLOW_FIELDS = ['name', 'cwd', 'default_timeout_secs', 'inputs', 'harnesses',
+    'watchdog', 'max_parallel', 'skills', 'skills_dirs'];
+  const base = baseIn || blankSpec();
+  const merged = normaliseFlow(canvas);   // start from the operator's board (keeps shape + defaults)
+  const norm = normaliseFlow(proposal);   // the agent's graph, normalised identically
+  // Flow-level meta: the operator wins wherever they edited the top bar since
+  // the turn; otherwise the agent's values (new inputs/harnesses) come along.
+  for (const k of FLOW_FIELDS) {
+    if (!sameVal(canvas[k], base[k]) || !(k in proposal)) continue;   // operator touched it, or agent is silent
+    merged[k] = norm[k];
+  }
+  const byBase = new Map(normaliseFlow(base).tasks.map(t => [t.id, t]));
+  const byCanvas = new Map(merged.tasks.map(t => [t.id, t]));
+  const out = [];
+  const seen = new Set();
+  for (const pt of norm.tasks) {
+    seen.add(pt.id);
+    const ct = byCanvas.get(pt.id);
+    if (!ct) { out.push(pt); continue; }   // brand-new node from the agent (auto-placed by caller)
+    const bt = byBase.get(pt.id);
+    const mt = Object.assign({}, ct);
+    for (const f of EDIT_FIELDS) {
+      const opTouched = !sameVal(ct[f], bt ? bt[f] : undefined);
+      if (!opTouched) mt[f] = pt[f];        // only the agent moved it → follow the agent
+    }
+    mt.pos = ct.pos;                          // layout is the operator's alone
+    out.push(mt);
+  }
+  for (const ct of merged.tasks) {
+    if (seen.has(ct.id)) continue;
+    if (byBase.has(ct.id)) continue;         // agent removed a node that predated the turn → respect it
+    // The blank board's placeholder block is not an operator node: with a
+    // base that predates it (the agent's last accepted graph) the rule below
+    // would keep a dead 'draft' block next to the agent's fresh graph. An
+    // emptied placeholder only — one carrying a typed prompt is real work.
+    if (merged.tasks.length === 1 && ct.id === 'draft' && !(ct.in || '').trim()) continue;
+    out.push(ct);                             // operator added it this turn → keep it
+  }
+  merged.tasks = out;
+  if (!merged.tasks.length) merged.tasks = [ blankTask('draft') ];
+  return merged;
+}
+
 // ---- model catalogs + deps chips (Конфиг tab) -----------------------------
 //
 // Live model catalogs per harness, pulled from the server (which pulls them
@@ -2872,6 +2978,12 @@ async function beginChat(harness, model) {
   const planner = $('#chat-planner');
   const body = { harness, model, prompt };
   if (planner && !planner.checked) body.skills = [];
+  // The project folder from the builder's meta bar — read from the live DOM
+  // value (spec.current only syncs on other paths). Empty → the server keeps
+  // the classic isolated chat workspace; the server validates the path and
+  // answers a plain error the dialog shows as-is.
+  const cwd = ($('#bf-cwd').value || '').trim();
+  if (cwd) body.cwd = cwd;
   try {
     const { run_id } = await post('/api/chats', body);
     if (task && task === editTask && task.in === prompt) {
@@ -2917,6 +3029,12 @@ function openChat(id) {
   chat.connected = false;
   chat.error = '';
   chat.sending = false;
+  // Three-way merge bookkeeping. `canvasBase` is the board as it stood when the
+  // operator last spoke (what the agent was reasoning about); `mergedHash` is
+  // the proposal we already laid out, so a later SSE tick that only flips
+  // status never re-merges and clobbers edits made after the first placement.
+  chat.canvasBase = null;
+  chat.mergedHash = null;
   sessionStorage.setItem('zori-open-chat', id);
   $('#runsel').value = id;
   $('#tm-msg').value = chat.drafts.get(id) || '';
@@ -2930,6 +3048,7 @@ function openChat(id) {
     chat.node = JSON.parse(event.data).nodes.chat;
     if (!chat.connected) chat.error = '';
     chat.connected = true;
+    placeProposalOnCanvas(chat.node);
     renderRunSection();
   });
   es.onerror = () => {
@@ -2947,8 +3066,16 @@ async function sendChat() {
   chat.sending = true;
   chat.error = '';
   $('#tm-send').disabled = true;
+  // What the agent is about to reason from is the board RIGHT NOW, so snapshot
+  // it and ship it to the server with the turn: the planner sees the operator's
+  // manual edits (a moved node, a switched model, a hand-wired dependency)
+  // instead of the stale graph still in its session. The server parks it and
+  // later pins the proposal's merge base (p.base) to the agent's last accepted
+  // graph; this snapshot only serves older-build proposals without one.
   try {
-    await post('/api/runs/' + encodeURIComponent(id) + '/steer', {node:'chat', text});
+    const graph = specForServer();
+    chat.canvasBase = JSON.parse(JSON.stringify(graph));
+    await post('/api/runs/' + encodeURIComponent(id) + '/steer', {node:'chat', text, graph});
     if (chat.run === id && input.value === text) {
       input.value = '';
       autogrow(input, 200);
@@ -2961,6 +3088,44 @@ async function sendChat() {
       renderRunSection();
     }
   }
+}
+
+// Lay a freshly-agreed proposal onto the builder's canvas. The operator just
+// confirmed the plan in chat and expects the graph in FRONT of them, editable
+// — so a NEW valid proposal (a hash we have not placed yet) merges onto the
+// board via the three-way merge: their positions and hand-edits are kept, the
+// agent's additions come along. The merge base comes WITH the proposal
+// (p.base — the agent's last accepted graph, or the board shipped with the
+// turn): it survives a chat reopen, where the client has no board history,
+// and it excludes edits made before the turn was sent, so a reply echoing
+// pre-edit values cannot revert them. The send-time snapshot is only the
+// fallback for proposals stored by older builds. An SSE tick that only flips
+// a status (same hash) is ignored, so it never re-merges and wipes edits made
+// after placement. An invalid proposal is NOT touched here: the working graph
+// stays put and the card next to it already spells out why (p.errors).
+function placeProposalOnCanvas(node) {
+  const p = node && node.proposal;
+  if (!p || !p.valid || !p.spec) return;
+  if (p.hash === chat.mergedHash) return;
+  const merged = mergeGraphIntoCanvas(p.base ?? chat.canvasBase, specForServer(), p.spec);
+  spec.current = merged;
+  spec.fromRunFile = false;   // it is the operator's board now, not a run mirror
+  assignAutoPositions();      // give the agent's brand-new nodes a spot
+  // Drop the node selection but KEEP the chat alive: the graph lands next to
+  // the dialogue that produced it, and the SSE stream, the transcript and the
+  // launch card stay open — the operator goes on talking (asks for another
+  // edge) or launches straight from the card. The old deselect() here tore
+  // the chat down (leaveChat) the moment the graph appeared, and reopening
+  // the chat replayed the close.
+  selId = null;
+  editTask = null; editIndex = -1; editEl = null;
+  selectTask(null);
+  setCfg(false);
+  spec.dirty = true;
+  touch();                    // refresh preview/edges and re-arm validation
+  renderBuilder(true);
+  renderRunSection();
+  chat.mergedHash = p.hash;
 }
 chatDialog.addEventListener('keydown', e => {
   if (e.key === 'Escape') e.stopPropagation();

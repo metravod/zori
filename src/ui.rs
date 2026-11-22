@@ -223,12 +223,22 @@ struct AnswerReq {
     node: String,
     text: String,
     question_id: Option<usize>,
+    /// The live canvas graph, sent with the answer so the planner's next turn
+    /// sees what the operator actually has on the board (positions are UI-only
+    /// and stripped; deps and leaf params are what the model must build on).
+    #[serde(default)]
+    graph: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
 struct SteerReq {
     node: String,
     text: String,
+    /// The live canvas graph, sent with the next turn so the planner builds on
+    /// the operator's edits (a moved node, a changed model, a hand-wired dep)
+    /// instead of the graph still held in the session.
+    #[serde(default)]
+    graph: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -489,6 +499,13 @@ struct ChatRequest {
     harness: String,
     model: String,
     prompt: String,
+    /// Project folder for the planner (the builder's «директория запуска»).
+    /// Absent/empty → the classic chat shape: an isolated per-task work dir.
+    /// When given, the chat flow gets `cwd:` + `workspace: flow`, so the agent
+    /// process runs IN the folder from the very first message and every
+    /// continuation resumes there.
+    #[serde(default)]
+    cwd: Option<String>,
     /// Skills to attach to the chat node. Absent → the default set (see
     /// [`start_chat`], which turns the planner into a config author by
     /// attaching the built-in `zori-config` cheat-sheet). An explicit list is
@@ -524,7 +541,15 @@ const CHAT_PROTOCOL: &str = "\
 ФОРМАТ ГРАФА. Когда состав согласован, выдай ПОЛНЫЙ граф одним блоком, помеченным \
 `zori-flow` (тройной обратный апостроф + слово zori-flow, внутри только YAML). Один \
 такой блок = одно предложение; целиком, не фрагментом и не диффом. Больше ничего \
-после блока не добавляй. Блок без этой метки zori не увидит и не предложит запустить.";
+после блока не добавляй. Блок без этой метки zori не увидит и не предложит запустить.
+
+КАНВАС. Валидный граф из блока zori сам ляжет на канвас рядом с чатом — в файл его \
+не пиши. Оператор правит его руками: двигает узлы, меняет модель и параметры, \
+дорисовывает зависимости, а запускает кнопкой — запускается ровно то, что на канвасе. \
+Если в следующем ходе тебе прислали блок «Текущий граф на канвасе» — это граф перед \
+оператором, возможно отредактированный им вручную. Строй новый граф от него и сохрани \
+правки оператора (модели, параметры, зависимости); координаты pos не воспроизводи — \
+это только раскладка. Ответь снова ПОЛНЫМ графом одним блоком zori-flow, как выше.";
 
 async fn start_chat(
     State(state): State<std::sync::Arc<AppState>>,
@@ -545,7 +570,17 @@ async fn start_chat(
     // discipline — phases, when to fan out, harness choice, «never save, never
     // run»). An explicit `skills` list from the UI — including an empty one —
     // overrides the default set, so a plain chat without them is reachable.
-    let skills = req.skills.unwrap_or_else(|| vec!["zori-config".to_string(), "zori-planner".to_string()]);
+    // (skills cloned, not moved: `chat_flow_yaml` below borrows the whole req)
+    let skills = req.skills.clone().unwrap_or_else(|| vec!["zori-config".to_string(), "zori-planner".to_string()]);
+    // The project folder resolves BEFORE anything is booted: a typo'd path
+    // must come back as one clear error, not as a run whose agent quietly
+    // spawns somewhere odd.
+    let project_dir = match req.cwd.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        None => None,
+        Some(raw) => Some(
+            resolve_project_dir(raw).map_err(|msg| ApiError(StatusCode::BAD_REQUEST, msg))?,
+        ),
+    };
     // The hard response protocol lives in `out:`, which the runner renders as
     // the closing `# Output` block on every attempt — so it re-arms each turn,
     // and a steered continuation is held to it as firmly as the first reply.
@@ -560,15 +595,64 @@ async fn start_chat(
         out.push_str("\n\n");
         out.push_str(&brief);
     }
-    let flow = json!({
+    // With a project folder, tell the planner where it IS: the process cwd is
+    // already there (see `chat_flow_yaml`), and one factual line keeps the
+    // model from `cd`-ing around or inventing absolute paths.
+    if let Some(dir) = &project_dir {
+        out.push_str("\n\nРабочий каталог этой сессии — ");
+        out.push_str(&dir.display().to_string());
+        out.push_str(". Ты уже запущен в нём; файлы проекта открывай по относительным путям.");
+    }
+    let yaml = chat_flow_yaml(&req, &skills, &out, project_dir.as_deref())
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let id = boot_flow(state, &yaml, None, Vec::new(), None).await
+        .map_err(|e| ApiError(StatusCode::BAD_REQUEST, format!("{e:#}")))?;
+    Ok(Json(json!({"run_id": id})))
+}
+
+/// Resolve the operator-typed project folder to an absolute, reachable
+/// directory. `~` expands and an existing path canonicalises
+/// ([`crate::artifacts::absolute`]); the metadata check is what actually
+/// proves the folder is usable, and its error names both the typed value and
+/// the resolved one so a typo is obvious in the console.
+fn resolve_project_dir(raw: &str) -> Result<std::path::PathBuf, String> {
+    let abs = crate::artifacts::absolute(std::path::Path::new(raw));
+    match std::fs::metadata(&abs) {
+        Ok(m) if m.is_dir() => Ok(abs),
+        Ok(_) => Err(format!(
+            "проектная папка не каталог: {raw} (→ {})",
+            abs.display()
+        )),
+        Err(e) => Err(format!(
+            "проектная папка недоступна: {raw} (→ {}): {e}",
+            abs.display()
+        )),
+    }
+}
+
+/// The synthetic chat flow's YAML, pure so its shape is directly testable.
+/// Without a project folder it is exactly the classic chat flow (no `cwd`, no
+/// `workspace` — the task keeps its isolated work dir). With one, the flow
+/// carries `cwd:` and the chat task `workspace: flow`: `effective_cwd` then
+/// makes the project folder the process cwd on the first run AND on every
+/// resume (a steer recomputes it from the same stored flow), and
+/// `${project.dir}` / `ZORI_PROJECT_DIR` point at it too.
+fn chat_flow_yaml(
+    req: &ChatRequest,
+    skills: &[String],
+    out: &str,
+    project_dir: Option<&std::path::Path>,
+) -> Result<String, serde_yaml::Error> {
+    let mut flow = json!({
         "name": "chat", "inputs": { "message": req.prompt },
         "tasks": [{"id": "chat", "harness": req.harness, "model": req.model,
                    "in": "${inputs.message}", "out": out, "skills": skills}]
     });
-    let yaml = serde_yaml::to_string(&flow).map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let id = boot_flow(state, &yaml, None, Vec::new(), None).await
-        .map_err(|e| ApiError(StatusCode::BAD_REQUEST, format!("{e:#}")))?;
-    Ok(Json(json!({"run_id": id})))
+    if let Some(dir) = project_dir {
+        flow["cwd"] = json!(dir.display().to_string());
+        flow["tasks"][0]["workspace"] = json!("flow");
+    }
+    serde_yaml::to_string(&flow)
 }
 
 async fn boot(
@@ -692,6 +776,10 @@ async fn steer(
         .map_err(|msg| ApiError(StatusCode::CONFLICT, msg))?;
     let node = req.node.clone();
     let text = req.text.clone();
+    // The live canvas the operator sent with this turn (may be absent from an
+    // older client). The planner's next prompt is built on it — see
+    // `TrackedRun::steer`.
+    let graph = req.graph.clone();
     let lock = m.op_lock.clone();
     let tracked = m.tracked.clone();
     let ack = emitter.snapshot();
@@ -699,7 +787,7 @@ async fn steer(
     let watch = emitter.clone();
     let handle = tokio::spawn(async move {
         let _guard = lock.lock().await;
-        if let Err(e) = tracked.steer(&emitter, &node, &text).await {
+        if let Err(e) = tracked.steer(&emitter, &node, &text, graph).await {
             eprintln!("steer '{node}' failed: {e:#}");
         }
     });
@@ -736,7 +824,7 @@ async fn answer(
         return Err(ApiError(StatusCode::BAD_REQUEST, "empty answer".into()));
     }
     m.tracked
-        .answer_question(&m.emitter, &req.node, req.question_id, &req.text)
+        .answer_question(&m.emitter, &req.node, req.question_id, &req.text, req.graph)
         .map_err(|e| ApiError(StatusCode::CONFLICT, format!("{e:#}")))?;
     Ok(Json(m.emitter.snapshot()))
 }
@@ -1461,6 +1549,14 @@ struct RunProposalReq {
     hash: String,
     #[serde(default)]
     inputs: HashMap<String, String>,
+    /// The live canvas graph, sent by the card's ▶ so what runs is exactly what
+    /// the operator sees and hand-edited (a moved node, a changed model, a
+    /// wired dependency), not the YAML the agent first proposed. When present
+    /// it is validated the same way the canvas ▶ Run validates, and booted
+    /// instead of the stored `raw`; the hash/CAS guard still pins it to the
+    /// proposal the operator confirmed. Absent (an older client) → `raw` boots.
+    #[serde(default)]
+    flow: Option<serde_json::Value>,
 }
 
 /// Launch the flow a chat node *proposed* and the operator confirmed — the only
@@ -1528,16 +1624,42 @@ async fn run_proposal(
             ),
         ));
     }
-    // Boot the exact YAML the operator approved — re-parsed here, never the
-    // client's copy. Refusing here on a hole keeps the run honest: a proposed
-    // graph that reads `${inputs.k}` nothing supplies would die at that node.
-    let flow: Flow = serde_yaml::from_str(&prop.raw)
-        .map_err(|e| ApiError(StatusCode::BAD_REQUEST, format!("flow YAML не разобран: {e}")))?;
-    let given: Vec<String> = req.inputs.keys().cloned().collect();
-    let missing = missing_inputs(&flow, &given);
-    if !missing.is_empty() {
-        return Err(ApiError(StatusCode::BAD_REQUEST, missing_inputs_error(&missing)));
-    }
+    // Launch what the operator actually sees. When the card sends the live
+    // canvas graph (`flow`), boot THAT — the operator may have dragged a node,
+    // switched a model, or wired a dependency by hand, and ▶ must run the board
+    // in front of them, not the YAML the agent first wrote. It is validated
+    // exactly like the canvas ▶ Run (parse_spec + validate_spec), so an edited
+    // graph with a hole is refused here rather than booted broken. The hash/CAS
+    // guard above still pins the launch to the proposal that was confirmed.
+    // Without `flow` (an older client) we boot the approved `raw`, re-parsed
+    // server-side — never a client copy the operator did not confirm.
+    let (flow, yaml) = match req.flow {
+        Some(value) => {
+            let flow = parse_spec(value)?;
+            validate_spec(&flow).map_err(|e| ApiError(StatusCode::BAD_REQUEST, e))?;
+            let given: Vec<String> = req.inputs.keys().cloned().collect();
+            let missing = missing_inputs(&flow, &given);
+            if !missing.is_empty() {
+                return Err(ApiError(StatusCode::BAD_REQUEST, missing_inputs_error(&missing)));
+            }
+            let yaml = proposal_yaml(&flow)?;
+            (flow, yaml)
+        }
+        None => {
+            // Boot the exact YAML the operator approved — re-parsed here. A
+            // proposed graph that reads `${inputs.k}` nothing supplies would
+            // die at that node, so refuse the launch and say which input.
+            let flow: Flow = serde_yaml::from_str(&prop.raw)
+                .map_err(|e| ApiError(StatusCode::BAD_REQUEST, format!("flow YAML не разобран: {e}")))?;
+            let given: Vec<String> = req.inputs.keys().cloned().collect();
+            let missing = missing_inputs(&flow, &given);
+            if !missing.is_empty() {
+                return Err(ApiError(StatusCode::BAD_REQUEST, missing_inputs_error(&missing)));
+            }
+            let yaml = proposal_yaml(&flow)?;
+            (flow, yaml)
+        }
+    };
 
     // CAS claim (Proposed → Launched) so a double-click boots exactly once; the
     // loser sees "already launched" instead of a second identical run.
@@ -1551,7 +1673,6 @@ async fn run_proposal(
     // Give the approved graph a durable home in flows/, then boot it as a real
     // flow run. If the boot fails, revert the claim so the operator can fix
     // inputs and retry — the proposal is not consumed by a failed launch.
-    let yaml = proposal_yaml(&flow)?;
     let path = match write_flow_file(&state, &flow, None, &yaml).await {
         Ok(p) => p,
         Err(e) => {
@@ -2677,5 +2798,68 @@ mod ui_tests {
         // status is Stale, outside the steer's from-set.
         let e = claim_node(&em, "b", &[TaskStatus::Done], false).unwrap_err();
         assert!(e.contains("busy"), "{e}");
+    }
+
+    // planner-cwd: the project folder a chat is started with must reach the
+    // agent process as its cwd. These pin the two pure pieces `start_chat`
+    // delegates to; the end-to-end cwd (meta.json of both turns) is exercised
+    // on a live console below.
+    fn chat_req(cwd: Option<&str>) -> ChatRequest {
+        ChatRequest {
+            harness: "coddy".into(),
+            model: "m".into(),
+            prompt: "привет".into(),
+            cwd: cwd.map(str::to_string),
+            skills: Some(vec![]),
+        }
+    }
+
+    #[test]
+    fn resolve_project_dir_names_the_path_on_every_failure() {
+        let tmp = std::env::temp_dir().join(format!(
+            "zori-ui-proj-{}-{}",
+            std::process::id(),
+            epoch_secs()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        // A reachable folder resolves to its canonical absolute self.
+        let got = resolve_project_dir(tmp.to_str().unwrap()).expect("dir resolves");
+        assert!(got.is_absolute(), "{}", got.display());
+        assert_eq!(got, tmp.canonicalize().unwrap());
+        // A missing path names both the typed value and the resolved one.
+        let e = resolve_project_dir(tmp.join("nope").to_str().unwrap()).unwrap_err();
+        assert!(e.contains("недоступна") && e.contains("nope"), "{e}");
+        // A regular file is not a project folder.
+        let f = tmp.join("file.txt");
+        std::fs::write(&f, b"x").unwrap();
+        let e = resolve_project_dir(f.to_str().unwrap()).unwrap_err();
+        assert!(e.contains("не каталог") && e.contains("file.txt"), "{e}");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn chat_flow_without_a_folder_keeps_the_classic_shape() {
+        let y = chat_flow_yaml(&chat_req(None), &[], "OUT", None).unwrap();
+        let f: Flow = serde_yaml::from_str(&y).unwrap();
+        assert!(f.cwd.is_none(), "no cwd without a folder: {y}");
+        assert!(f.tasks[0].workspace.is_none(), "task keeps its isolated work dir: {y}");
+    }
+
+    #[test]
+    fn chat_flow_with_a_folder_sets_cwd_and_workspace_flow() {
+        let dir = std::env::temp_dir().join(format!(
+            "zori-ui-proj2-{}-{}",
+            std::process::id(),
+            epoch_secs()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let y = chat_flow_yaml(&chat_req(Some(dir.to_str().unwrap())), &[], "OUT", Some(&dir)).unwrap();
+        let f: Flow = serde_yaml::from_str(&y).unwrap();
+        assert_eq!(f.cwd.as_deref(), Some(dir.as_path()));
+        assert_eq!(f.tasks[0].workspace, Some(crate::config::Workspace::Flow));
+        // And that combination is exactly what puts the process in the folder:
+        let (proc_cwd, _flag) = crate::runner::effective_cwd(&f.cwd, &f.tasks[0], None).expect("cwd");
+        assert_eq!(proc_cwd, dir.canonicalize().unwrap());
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

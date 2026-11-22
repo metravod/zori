@@ -81,6 +81,13 @@ pub struct Proposal {
     /// The DAG level plan when `valid`, so the console can sketch the graph
     /// without re-parsing the YAML.
     pub levels: Vec<Vec<String>>,
+    /// The parsed graph serialised back to JSON when `valid` — the same shape
+    /// `/api/flows/open` hands the builder, so a confirmed proposal can go
+    /// straight onto the canvas (positions included when the model supplied
+    /// any) without the browser parsing YAML. `None` when invalid: there is
+    /// no graph to show, only the reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec: Option<serde_json::Value>,
 }
 
 /// Review M12: the fenced block is model output — untrusted and unbounded. A
@@ -228,6 +235,7 @@ pub fn validate(yaml: &str) -> Proposal {
                 errors: vec![format!("flow YAML не разобран: {e}")],
                 warnings: Vec::new(),
                 levels: Vec::new(),
+                spec: None,
             };
         }
     };
@@ -239,6 +247,12 @@ pub fn validate(yaml: &str) -> Proposal {
             errors: Vec::new(),
             warnings: crate::ui::missing_input_warnings(&flow),
             levels: plan.levels,
+            // The canvas mirror travels with the verdict: the same JSON shape
+            // open_flow hands the builder, so the console can lay the graph
+            // out without a YAML parser. A serialisation failure here would
+            // only cost the canvas (the card still shows the YAML), so it
+            // degrades to None rather than failing an otherwise good graph.
+            spec: serde_json::to_value(&flow).ok(),
         },
         Err(errors) => Proposal {
             raw,
@@ -247,6 +261,7 @@ pub fn validate(yaml: &str) -> Proposal {
             errors,
             warnings: Vec::new(),
             levels: Vec::new(),
+            spec: None,
         },
     }
 }
@@ -270,6 +285,7 @@ pub fn from_reply(reply: &str) -> Option<Proposal> {
             )],
             warnings: Vec::new(),
             levels: Vec::new(),
+            spec: None,
         }),
     }
 }
