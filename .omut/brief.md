@@ -12,10 +12,11 @@ Zori is a Rust CLI and an embedded local web console. A YAML flow connects tasks
 
 ## Where it lives
 - [Public repository](https://github.com/metravod/zori), default branch main · how: gh repo view metravod/zori · seen 2026-11-20
-- [Release v0.2.0](https://github.com/metravod/zori/releases/tag/v0.2.0), four native archives and SHA256SUMS · how: gh release view v0.2.0 --repo metravod/zori · seen 2026-11-22
-- [Homebrew formula](https://github.com/metravod/homebrew-tap/blob/main/Formula/zori.rb), version 0.2.0 · how: brew info metravod/tap/zori · seen 2026-11-22
+- [Release v0.2.1](https://github.com/metravod/zori/releases/tag/v0.2.1), four native archives and SHA256SUMS · how: gh release view v0.2.1 --repo metravod/zori · seen 2026-11-24
+- [Homebrew formula](https://github.com/metravod/homebrew-tap/blob/main/Formula/zori.rb), version 0.2.1 · how: gh api repos/metravod/homebrew-tap/contents/Formula/zori.rb · seen 2026-11-24
 
 ## Now
+**Verified 2026-11-24:** v0.2.1 released — transcript chat for text CLIs, watchdog deadline extensions on activity, absolute prompt-file paths. Release run green on all four targets; macOS arm64 archive checksum-verified and smoke-echo passed; tap formula bumped to 0.2.1. See the [release run](https://github.com/metravod/zori/actions/runs/45349033649) and [tap update](https://github.com/metravod/homebrew-tap/actions/runs/45349852868).
 **2026-11-23:** `prompt_via: file` harnesses no longer die on watchdog restart — the prompt-file path substituted into argv is now absolute (was relative to the runs root, unresolvable from the task work dir). 212 Rust checks green. Open: a node whose attempt dies may leave a stale non-terminal status in `state.json` if the server restarted mid-attempt — see [thread](threads/stale-status-after-dead-attempt.md).
 **2026-11-23:** The console extends active deadlines and supports operator questions for text CLIs. See the [watchdog guide](../docs/guide.md#the-watchdog-nudges-retries-and-questions-to-you).
 **Verified 2026-11-22:** harnesses resolve in three layers — built-in → `~/.zori/harnesses.yml` → a flow's `harnesses:` block — so a personally-added CLI (Devin is wired as the first resident) shows up everywhere at once: `zori harnesses` (source + PATH marker), `zori models`, `zori catalog`, `/api/harnesses`, the console picker, the Fleet dialog and the planner brief. Devin PONG-verified through a real zori run; SWE-2 models are Pro-gated on this account (documented in its model_notes). 204 Rust + 116 web checks green. See [the personal store guide](../docs/guide.md#adding-a-harness-the-personal-store).

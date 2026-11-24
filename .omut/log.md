@@ -1,5 +1,7 @@
 # Log
 
+- 2026-11-24 · devin/SWE-2 · released v0.2.1: committed the transcript-chat/watchdog-extension batch as 897b157, pushed main and the tag, release workflow green on all four targets; verified the macOS arm64 archive against SHA256SUMS and ran `zori 0.2.1` + smoke-echo locally; dispatched the tap's Update Zori and the formula now reads 0.2.1 → [release](https://github.com/metravod/zori/releases/tag/v0.2.1)
+
 - 2026-11-23 · devin/SWE-2 · fixed `prompt_via: file` harnesses dying on watchdog restart/steer: the substituted prompt-file path inherited the relative runs root (`zori-runs`) while the child's cwd is the task work dir — now absolutised via `artifacts::absolute()` in both the tracked engine and classic `run_task`; regression test reproduces the `os error 2`-style failure under a relative run dir → [runner.rs](../src/runner.rs)
 
 - 2026-11-23 · codex/GPT-6 · added opt-in transcript chat for print-mode agent CLIs, including operator questions, follow-up messages and recovery of completed attempts → [guide](../docs/guide.md#adding-a-harness-the-personal-store)
