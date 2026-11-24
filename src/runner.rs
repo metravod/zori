@@ -32,6 +32,7 @@ use crate::config::{Flow, PromptVia, Task, Workspace};
 use crate::connectors::{self, Connector};
 use crate::dag::{build_plan, ExecutionPlan};
 use crate::state::{Emitter, FlowProposal, ProposalStatus, Role, SessionRef, TaskStatus};
+use crate::watchdog::activity::{Activity, ObservedOutput, EXTENSION};
 use crate::watchdog::{Attempt, Settings, Verdict};
 
 /// Default per-task timeout when neither the flow nor the task sets one.
@@ -972,6 +973,9 @@ async fn run_task(
         if attempt_dir.is_none() {
             tokio::fs::write(&path, &prompt).await.with_context(|| "writing prompt file")?;
         }
+        // Same rule as the tracked engine: argv paths resolve against the
+        // child's cwd, so hand it an absolute prompt-file path.
+        let path = artifacts::absolute(&path);
         for tok in sp.argv.iter_mut() {
             if tok == "__ZORI_PROMPT_FILE__" {
                 *tok = path.display().to_string();
@@ -1651,6 +1655,27 @@ impl TrackedRun {
         }
     }
 
+    /// Attach saved turns from older runs when this harness has since opted
+    /// into transcript chat. Only reuse an unambiguous, completed attempt.
+    pub(crate) fn restore_transcript_chats(&self, state: &mut crate::state::RunState) {
+        let manifest = self.art.manifest.snapshot();
+        for node in state.nodes.values_mut().filter(|n| n.status == TaskStatus::Done && n.session.is_none()) {
+            let Some(task) = self.task(&node.id) else { continue };
+            if task.harness != node.harness || !connector_for(&self.flow, &task).is_ok_and(|c| c.transcript_chat) {
+                continue;
+            }
+            let Some(entry) = manifest.tasks.get(&node.id) else { continue };
+            let digest = artifacts::sha256_hex(node.output.as_bytes());
+            let mut matches = entry.attempts.iter().filter(|(_, a)| a.status == "done"
+                && a.out.as_ref().is_some_and(|o| o.sha256 == digest));
+            if let Some((nonce, _)) = matches.next() {
+                if matches.next().is_none() && self.art.dirs.attempt_dir(&node.id, nonce).join("prompt.txt").is_file() {
+                    node.session = Some(SessionRef::Transcript { attempt: nonce.clone() });
+                }
+            }
+        }
+    }
+
     /// Steer a finished node: append the human turn, resume the node's session
     /// with it, record the agent's reply, and mark downstream nodes `Stale` so
     /// the human re-runs them (their input just changed). The steering turn is
@@ -2321,6 +2346,8 @@ impl TrackedRun {
                         sessions_dir: self.sessions_dir.clone(),
                         session_id: sid,
                     })
+                } else if conn.transcript_chat {
+                    Some(SessionRef::Transcript { attempt: nonce.clone() })
                 } else {
                     // Codex (`--json`) and OpenCode (`--format json`): stream a
                     // machine format so the reply + session key come off stdout.
@@ -2331,6 +2358,27 @@ impl TrackedRun {
                     None
                 };
                 (sp, session, prompt)
+            }
+            ExecMode::Resume(SessionRef::Transcript { attempt }, human) => {
+                anyhow::ensure!(conn.transcript_chat, "transcript chat disabled for {}", conn.id);
+                anyhow::ensure!(Path::new(attempt).file_name() == Some(attempt.as_ref()), "invalid attempt id");
+                let previous = self.art.dirs.attempt_dir(&task.id, attempt);
+                let prior_prompt = tokio::fs::read_to_string(previous.join("prompt.txt")).await
+                    .context("reading the previous conversation prompt")?;
+                let reply = tokio::fs::read_to_string(previous.join("out.txt")).await
+                    .context("reading the previous agent reply")?;
+                let protocol = if prior_prompt.contains("# Operator communication protocol") {
+                    None
+                } else {
+                    supervision.and_then(crate::watchdog::preamble)
+                };
+                let prompt = format!("{prior_prompt}\n{}\n# Previous assistant reply\n{reply}\n\n# Follow-up message\n{human}\n\nContinue the task from this exchange and the work already in this directory.", protocol.as_deref().unwrap_or(""));
+                let mut continued = conn.clone();
+                if continued.prompt_file_flag.is_some() && continued.prompt_via == PromptVia::Arg {
+                    continued.prompt_via = PromptVia::File;
+                }
+                let sp = connectors::plan(&continued, task, &prompt, flag_cwd.as_deref())?;
+                (sp, Some(SessionRef::Transcript { attempt: nonce.clone() }), prompt)
             }
             ExecMode::Resume(session, human) => {
                 let sp = connectors::resume_plan(&conn, session, human, Some(&cwd))?;
@@ -2351,9 +2399,14 @@ impl TrackedRun {
         // get its path substituted into argv, replacing the deleted temp file.
         tokio::fs::write(attempt_dir.join("prompt.txt"), &prompt).await.with_context(|| "writing prompt file")?;
         if sp.file_prompt.is_some() {
+            // The runs root is often relative (`zori-runs`) and the child
+            // resolves argv paths against ITS cwd (the task work dir), so the
+            // prompt-file path must be absolute — a relative one exits the CLI
+            // before it ever reads the prompt.
+            let prompt_path = artifacts::absolute(&attempt_dir.join("prompt.txt"));
             for tok in sp.argv.iter_mut() {
                 if tok == "__ZORI_PROMPT_FILE__" {
-                    *tok = attempt_dir.join("prompt.txt").display().to_string();
+                    *tok = prompt_path.display().to_string();
                 }
             }
         }
@@ -2388,10 +2441,11 @@ impl TrackedRun {
             &env,
             timeout,
             &task.id,
-            Some(emitter),
+            emitter,
+            supervision.filter(|s| s.extend_on_progress && conn.is_agent)
+                .map(|_| Activity::new(harness_session.as_ref())),
             supervision.filter(|s| !summarizing && s.ask && !s.unattended && crate::watchdog::preamble_applies(&conn))
                 .map(|_| conn.id.clone()),
-            &task.id,
         )
         .await;
 
@@ -2440,9 +2494,19 @@ impl TrackedRun {
             _ if !out.timed_out => stream_error.clone().map(Verdict::Retry),
             _ => None,
         };
-        let verdict = harness_verdict.unwrap_or_else(|| {
+        let mut verdict = harness_verdict.unwrap_or_else(|| {
             attempt_verdict(&facts, supervision.filter(|_| supervise_failures), resumable(&resolved_session))
         });
+        if conn.id == "devin" && conn.transcript_chat && facts.success && verdict == Verdict::Ok {
+            if let Some(settings) = supervision.filter(|s| s.ask) {
+                if let Some(text) = crate::watchdog::devin_access_question(&agent_reply, &out.stderr) {
+                    if !settings.unattended {
+                        publish_questions(emitter, &task.id, &format!("ASK: {text}"), &mut None);
+                    }
+                    verdict = Verdict::Ask(text.to_owned());
+                }
+            }
+        }
         let verdict = question_verdict(emitter, &task.id, verdict, resumable(&resolved_session), supervision.is_some_and(|s| s.unattended));
         // Review (minor): when the JSONL stream also broke at the moment the
         // timeout fired, only the timeout reached the operator — the truncated
@@ -2450,7 +2514,7 @@ impl TrackedRun {
         // head (its exact prefix is a stable contract: watchdog retries grep
         // it) and append the stream reason, so the attempt names both causes.
         let fail_reason = if out.timed_out {
-            let mut reason = format!("TIMED OUT after {}s (killed with its process group)", timeout.as_secs());
+            let mut reason = format!("TIMED OUT after {}s (killed with its process group)", out.timeout.as_secs());
             if let Some(se) = &stream_error {
                 reason.push_str(&format!("; stream also failed: {se}"));
             }
@@ -2463,7 +2527,7 @@ impl TrackedRun {
         };
         let status = if fail_reason.is_some() { TaskStatus::Failed } else { TaskStatus::Done };
         let stderr_final = if out.timed_out {
-            let mut head = format!("TIMED OUT after {}s", timeout.as_secs());
+            let mut head = format!("TIMED OUT after {}s", out.timeout.as_secs());
             if let Some(se) = &stream_error {
                 head.push_str(&format!(" (stream also failed: {se})"));
             }
@@ -2647,6 +2711,7 @@ fn resumable(session: &Option<SessionRef>) -> bool {
                 | SessionRef::Codex { .. }
                 | SessionRef::Opencode { .. }
                 | SessionRef::Echo
+                | SessionRef::Transcript { .. }
         )
     )
 }
@@ -2666,8 +2731,8 @@ fn env_pairs(conn: &Connector, task: &Task) -> Vec<(String, String)> {
 /// readers started before stdin (no pipe deadlock), `wait()` raced against a
 /// deadline and a heartbeat ticker, kill-the-whole-group *before* draining on
 /// timeout, a bounded reader grace, and partial-output snapshots so a killed
-/// run still yields text. `emitter`/`node_id` (when both `Some`) get progress
-/// updates on every heartbeat and after the final drain.
+/// run still yields text. The console receives progress on every heartbeat,
+/// on deadline extensions and after the final drain.
 // Mirrors `run_task`'s parameter list deliberately: it is the same spawn
 // contract plus two progress args; folding them into a struct here would make
 // the two loops harder to diff against each other.
@@ -2680,10 +2745,10 @@ async fn spawn_captured(
     cwd: Option<&Path>,
     env: &[(String, String)],
     timeout: Duration,
-    label: &str,
-    emitter: Option<&Emitter>,
-    question_harness: Option<String>,
     node_id: &str,
+    emitter: &Emitter,
+    mut activity: Option<Activity>,
+    question_harness: Option<String>,
 ) -> Result<TrackedOutcome> {
     let mut cmd = Command::new(program);
     cmd.args(&argv[1..]); // argv[0] is the program
@@ -2709,7 +2774,8 @@ async fn spawn_captured(
     let stderr = child.stderr.take().ok_or_else(|| anyhow!("no stderr handle"))?;
     let out_buf = SharedBuf::default();
     let err_buf = SharedBuf::default();
-    let observer = emitter.cloned().zip(question_harness);
+    let observer = question_harness.map(|harness| (emitter.clone(), harness));
+    let stdout = ObservedOutput(stdout, activity.as_ref().map(|a| a.stdout.clone()));
     let question_node = node_id.to_owned();
     let mut plain_text_fence = None;
     let mut stdout_task = tokio::spawn(read_stream_with(stdout, out_buf.clone(), move |line| {
@@ -2734,7 +2800,8 @@ async fn spawn_captured(
     // run_task: a child that never drains a big prompt must not sit outside
     // the deadline.
     let start = Instant::now();
-    let deadline = tokio::time::Instant::now() + timeout;
+    let timer_start = tokio::time::Instant::now();
+    let mut deadline = timer_start + timeout;
     let mut timed_out = false;
 
     {
@@ -2746,12 +2813,12 @@ async fn spawn_captured(
                 r = si.write_all(text.as_bytes()) => {
                     if let Err(e) = r {
                         if e.kind() != std::io::ErrorKind::BrokenPipe {
-                            eprintln!("  [{label}] stdin write error: {e}");
+                            eprintln!("  [{node_id}] stdin write error: {e}");
                         }
                     }
                 }
                 _ = tokio::time::sleep_until(deadline) => {
-                    eprintln!("  [{label}] TIMED OUT feeding stdin ({}s)", timeout.as_secs());
+                    eprintln!("  [{node_id}] TIMED OUT feeding stdin ({}s)", timeout.as_secs());
                     timed_out = true;
                 }
             }
@@ -2765,34 +2832,42 @@ async fn spawn_captured(
     ticker.tick().await;
 
     let push_progress = |bytes: usize, lines: usize, secs: u64| {
-        if let Some(em) = emitter {
-            let id = node_id.to_string();
-            em.mutate(move |st| {
-                if let Some(n) = st.nodes.get_mut(&id) {
-                    n.progress.bytes = bytes;
-                    n.progress.lines = lines;
-                    n.progress.elapsed_secs = secs;
-                }
-            });
-        }
+        emitter.mutate(|st| {
+            if let Some(n) = st.nodes.get_mut(node_id) {
+                n.progress.bytes = bytes;
+                n.progress.lines = lines;
+                n.progress.elapsed_secs = secs;
+            }
+        });
     };
 
     let mut exit_res: Option<std::io::Result<std::process::ExitStatus>> = None;
-    loop {
+    while !timed_out {
         tokio::select! {
             biased;
             r = &mut wait => { exit_res = Some(r); break; }
-            _ = tokio::time::sleep_until(deadline) => { timed_out = true; break; }
+            _ = tokio::time::sleep_until(deadline) => {
+                let evidence = activity.as_mut().and_then(|a| a.take_recent(Instant::now(), std::time::SystemTime::now()));
+                if let Some(reason) = evidence {
+                    deadline = tokio::time::Instant::now() + EXTENSION;
+                    let note = format!("[watchdog] {reason}. Deadline extended by 10 minutes.");
+                    eprintln!("  [{node_id}] {note}");
+                    emitter.append_turn(node_id, Role::System, note);
+                } else {
+                    timed_out = true;
+                }
+            }
             _ = ticker.tick() => {
                 let secs = start.elapsed().as_secs();
-                println!("  [{label}] … running {secs}s, {} bytes out so far", out_buf.bytes());
+                println!("  [{node_id}] … running {secs}s, {} bytes out so far", out_buf.bytes());
                 push_progress(out_buf.bytes(), out_buf.lines(), secs);
             }
         }
     }
 
+    let timeout = deadline.duration_since(timer_start);
     if timed_out {
-        eprintln!("  [{label}] TIMED OUT after {}s — killing group", timeout.as_secs());
+        eprintln!("  [{node_id}] TIMED OUT after {}s — killing group", timeout.as_secs());
         group.kill_group().await;
         let _ = tokio::time::timeout(Duration::from_secs(10), &mut wait).await;
     }
@@ -2813,7 +2888,7 @@ async fn spawn_captured(
     let (success, exit_code) = if timed_out {
         (false, None)
     } else {
-        let st = exit_res.unwrap().with_context(|| format!("waiting on '{label}'"))?;
+        let st = exit_res.unwrap().with_context(|| format!("waiting on '{node_id}'"))?;
         (st.success(), st.code())
     };
 
@@ -2822,6 +2897,7 @@ async fn spawn_captured(
         stderr: stderr_text,
         exit_code,
         timed_out,
+        timeout,
         success,
     })
 }
@@ -2832,6 +2908,7 @@ pub(crate) struct TrackedOutcome {
     pub stderr: String,
     pub exit_code: Option<i32>,
     pub timed_out: bool,
+    pub timeout: Duration,
     pub success: bool,
 }
 
@@ -3105,6 +3182,196 @@ tasks:
         assert_eq!(attempts["r0"].status, "done");
         assert_eq!(attempts["r0"].exit_code, Some(1));
         assert!(dir.join("run/tasks/science/r0/stdout.log").is_file());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn text_cli_waits_for_operator_then_releases_review_and_recovers_old_turn() {
+        let dir = std::env::temp_dir().join(artifacts::new_run_id("transcript-review"));
+        let flow: Flow = serde_yaml::from_str(r#"
+name: transcript-review
+harnesses:
+  devin:
+    transcript_chat: true
+    command:
+      - sh
+      - -c
+      - |
+        case "$1" in
+          -p)
+            case "$2" in *'ASK_INLINE:'*) ;; *) exit 7 ;; esac
+            echo 'warning: rejected a tool call that requires confirmation.' >&2
+            echo 'How would you like me to proceed?'
+            echo '- Provide a local diff.'
+            ;;
+          --prompt-file)
+            grep -q 'original brief' "$2" && grep -q 'How would you like me to proceed?' "$2" &&
+              grep -q 'use review.diff' "$2" || exit 8
+            test "$3" = '--permission-mode' && test "$4" = auto || exit 9
+            if grep -q 'second answer' "$2"; then
+              echo 'review complete'
+            elif grep -q 'respond after reload' "$2"; then
+              exit 10
+            else
+              echo 'ASK: Which module?'
+            fi
+            ;;
+        esac
+      - devin
+    prompt_arg: -p
+    prompt_file_flag: --prompt-file
+tasks:
+  - {id: swe, harness: devin, in: original brief, args: [--permission-mode, auto]}
+  - {id: join, harness: echo, in: compare, depends_on: [swe]}
+"#).unwrap();
+        let (tr, em) = supervised_fixture(&dir, flow).await;
+        let worker = tokio::spawn({
+            let tr = tr.clone();
+            let em = em.clone();
+            async move { tr.run_all(&em).await }
+        });
+        for (i, answer) in ["use review.diff", "second answer"].iter().enumerate() {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let s = em.snapshot();
+                    if s.nodes["swe"].status == TaskStatus::Waiting && s.nodes["swe"].questions.len() == i + 1 {
+                        assert_eq!(s.nodes["join"].status, TaskStatus::Pending);
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }).await.unwrap();
+            tr.answer_question(&em, "swe", Some(i + 1), answer, None).unwrap();
+        }
+        tokio::time::timeout(Duration::from_secs(5), worker).await.unwrap().unwrap();
+        let mut state = em.snapshot();
+        assert!(state.nodes["join"].output.contains("review complete"));
+        assert!(state.nodes["swe"].questions.iter().all(|q| q.closed && q.answer.is_some()));
+        // Older saved runs have the same artifacts, but no session handle.
+        state.nodes.get_mut("swe").unwrap().session = None;
+        tr.restore_transcript_chats(&mut state);
+        let reloaded = Emitter::new(state);
+        tr.steer(&reloaded, "swe", "respond after reload", None).await.unwrap();
+        assert_eq!(reloaded.snapshot().nodes["swe"].status, TaskStatus::Done);
+        assert_eq!(reloaded.snapshot().nodes["join"].status, TaskStatus::Stale);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// `prompt_via: file` substitutes the prompt-file path into argv, but the
+    /// runs root is often relative (`zori-runs`) while the child's cwd is the
+    /// task work dir — a relative path makes the CLI exit before it reads the
+    /// prompt (a Devin node's watchdog restart died on `os error 2`). The
+    /// substituted path must be absolute.
+    #[tokio::test]
+    async fn file_prompt_path_is_absolute_under_a_relative_run_dir() {
+        let dir = std::env::temp_dir().join(artifacts::new_run_id("file-prompt-rel"));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A relative path to the same dir, resolved against the process cwd —
+        // mirrors `zori-runs` without chdir (tests share the process cwd).
+        let cwd = std::env::current_dir().unwrap();
+        let mut rel = PathBuf::new();
+        for _ in cwd.ancestors().skip(1) {
+            rel.push("..");
+        }
+        rel.extend(dir.strip_prefix(Path::new("/")).unwrap().components());
+        assert!(!rel.is_absolute(), "fixture must be relative: {}", rel.display());
+        let flow: Flow = serde_yaml::from_str(r#"
+name: file-prompt-rel
+harnesses:
+  filecli:
+    prompt_via: file
+    prompt_file_flag: --prompt-file
+    command: [sh, -c, 'cat "$1"']
+tasks:
+  - {id: t, harness: filecli, in: hello-prompt-marker}
+"#).unwrap();
+        let plan = plan(&flow).unwrap();
+        let tr = TrackedRun::new(flow, plan, &[], rel.join("run"), dir.join("sessions")).unwrap();
+        let state = RunState::new(
+            "sup-1".into(),
+            "file-prompt-rel".into(),
+            "sup.yml".into(),
+            Some(dir.join("run")),
+            vec![vec!["t".to_string()]],
+            &[("t".to_string(), "filecli".to_string(), None, false, vec![])],
+        );
+        let em = Emitter::new(state);
+        tr.run_all(&em).await;
+        let state = em.snapshot();
+        assert_eq!(state.nodes["t"].status, TaskStatus::Done, "{:?}", state.nodes["t"].stderr);
+        assert!(state.nodes["t"].output.contains("hello-prompt-marker"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn watchdog_extends_quiet_coddy_without_restarting_its_review() {
+        let dir = std::env::temp_dir().join(artifacts::new_run_id("coddy-extension"));
+        let mut flow: Flow = serde_yaml::from_str(r#"
+name: extension
+default_timeout_secs: 1
+watchdog: {retry: 0}
+tasks:
+  - {id: review, harness: coddy, in: review}
+  - {id: join, harness: echo, in: summary, depends_on: [review]}
+"#).unwrap();
+        // Real Coddy print sessions update this header after tool turns.
+        // Keep stdout entirely silent until after the configured deadline.
+        let script = r#"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -session-id) sid=$2; shift ;;
+    -sessions-dir) root=$2; shift ;;
+  esac
+  shift
+done
+mkdir -p "$root/$sid"
+printf '{"messageCount":3,"messagesModTime":%s000000000}' "$(date +%s)" > "$root/$sid/session.json"
+sleep 2
+echo 'final review'
+"#;
+        flow.harnesses.insert("coddy".into(), crate::config::HarnessOverride {
+            command: Some(vec!["sh".into(), "-c".into(), script.into(), "coddy".into()]),
+            ..Default::default()
+        });
+        let (tr, em) = supervised_fixture(&dir, flow).await;
+        tr.run_all(&em).await;
+        let state = em.snapshot();
+        assert_eq!(state.nodes["review"].status, TaskStatus::Done);
+        assert!(state.nodes["join"].output.contains("final review"));
+        assert!(state.nodes["review"].turns.iter().any(|t|
+            t.role == Role::System && t.text.contains("Coddy session advanced")));
+        let manifest: artifacts::Manifest = serde_json::from_slice(
+            &std::fs::read(dir.join("run/manifest.json")).unwrap()).unwrap();
+        assert_eq!(manifest.tasks["review"].attempts.len(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn watchdog_extends_partial_stdout_but_keeps_idle_and_strict_deadlines() {
+        let dir = std::env::temp_dir().join(artifacts::new_run_id("output-extension"));
+        let flow: Flow = serde_yaml::from_str(r#"
+name: output-extension
+default_timeout_secs: 1
+watchdog: {retry: 0}
+harnesses:
+  writer:
+    command: [sh, -c, 'printf partial; sleep 2; echo " result"']
+  stalled:
+    command: [sh, -c, 'echo diagnostic >&2; sleep 30']
+tasks:
+  - {id: streaming, harness: writer, in: go}
+  - {id: strict, harness: writer, in: go, watchdog: {extend_on_progress: false}}
+  - {id: idle, harness: stalled, in: go}
+"#).unwrap();
+        let (tr, em) = supervised_fixture(&dir, flow).await;
+        tokio::time::timeout(Duration::from_secs(12), tr.run_all(&em)).await.unwrap();
+        let state = em.snapshot();
+        assert_eq!(state.nodes["streaming"].output.trim(), "partial result");
+        assert_eq!(state.nodes["streaming"].status, TaskStatus::Done);
+        for id in ["strict", "idle"] {
+            assert_eq!(state.nodes[id].status, TaskStatus::Failed);
+            assert!(state.nodes[id].stderr.starts_with("TIMED OUT after 1s"));
+        }
         std::fs::remove_dir_all(dir).unwrap();
     }
 

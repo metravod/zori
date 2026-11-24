@@ -1132,7 +1132,7 @@ function renderRunSection() {
     return;
   }
   $('#tm-run-hint').textContent = n.status === 'waiting' && !canAnswer ? 'waiting for answers to questions' : canAnswer ? 'the model awaits an answer — write it below, the node continues in the same session' :
-    canSteer ? '' :
+    canSteer ? (n.session?.kind === 'transcript' ? 'Follow-ups include the saved conversation and use the same task directory.' : '') :
     (n.status === 'running' ? 'running — steer becomes available once it finishes'
      : n.status === 'failed' ? 'node failed — fix the config/prompt and hit ⟳ Rerun (restarts with your edits)'
      : n.status === 'skipped' ? 'node was skipped (a dependency didn\'t finish) — ⟳ Rerun will launch it'

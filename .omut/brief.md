@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-11-22
+updated: 2026-11-23
 verified: 2026-11-20
 by: codex/GPT-6
 ---
@@ -16,7 +16,8 @@ Zori is a Rust CLI and an embedded local web console. A YAML flow connects tasks
 - [Homebrew formula](https://github.com/metravod/homebrew-tap/blob/main/Formula/zori.rb), version 0.2.0 · how: brew info metravod/tap/zori · seen 2026-11-22
 
 ## Now
-**Verified 2026-11-22:** Chromium exercised both node retry buttons after a model failure during a parallel level. The join waited for the corrected attempt and received both branch outputs. See the [console guide](../docs/guide.md).
+**2026-11-23:** `prompt_via: file` harnesses no longer die on watchdog restart — the prompt-file path substituted into argv is now absolute (was relative to the runs root, unresolvable from the task work dir). 212 Rust checks green. Open: a node whose attempt dies may leave a stale non-terminal status in `state.json` if the server restarted mid-attempt — see [thread](threads/stale-status-after-dead-attempt.md).
+**2026-11-23:** The console extends active deadlines and supports operator questions for text CLIs. See the [watchdog guide](../docs/guide.md#the-watchdog-nudges-retries-and-questions-to-you).
 **Verified 2026-11-22:** harnesses resolve in three layers — built-in → `~/.zori/harnesses.yml` → a flow's `harnesses:` block — so a personally-added CLI (Devin is wired as the first resident) shows up everywhere at once: `zori harnesses` (source + PATH marker), `zori models`, `zori catalog`, `/api/harnesses`, the console picker, the Fleet dialog and the planner brief. Devin PONG-verified through a real zori run; SWE-2 models are Pro-gated on this account (documented in its model_notes). 204 Rust + 116 web checks green. See [the personal store guide](../docs/guide.md#adding-a-harness-the-personal-store).
 **Verified 2026-11-22:** the ⚓ Fleet picker saves harness and model pairs to `~/.zori/fleet.json` for planner proposals. Chromium verified that the picker starts hidden on desktop and mobile widths, opens centered over the whole console, and stays closed after reload. Esc and Close discard edits, and Save updates the header count. Its browser check used a test roster. Storage and validation have separate coverage in `src/fleet.rs`. See the [fleet guide](../docs/guide.md#the-model-fleet).
 **Verified 2026-11-22:** the console opens the planner on an unselected canvas. Chromium checked that switching nodes preserves the planner session and draft, and reopening a historical run finds its launching chat. Replaying two OpenCode streams confirmed the watchdog passes the final report downstream after a late cancelled-input diagnostic. See the [console guide](../docs/guide.md#start-a-prompt-or-a-model-chat).

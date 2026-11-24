@@ -1,5 +1,11 @@
 # Log
 
+- 2026-11-23 · devin/SWE-2 · fixed `prompt_via: file` harnesses dying on watchdog restart/steer: the substituted prompt-file path inherited the relative runs root (`zori-runs`) while the child's cwd is the task work dir — now absolutised via `artifacts::absolute()` in both the tracked engine and classic `run_task`; regression test reproduces the `os error 2`-style failure under a relative run dir → [runner.rs](../src/runner.rs)
+
+- 2026-11-23 · codex/GPT-6 · added opt-in transcript chat for print-mode agent CLIs, including operator questions, follow-up messages and recovery of completed attempts → [guide](../docs/guide.md#adding-a-harness-the-personal-store)
+
+- 2026-11-23 · codex/GPT-6 · extended active console attempts by ten minutes on fresh output or a Coddy transcript update. Verified quiet Coddy finishing after its deadline and passing the review downstream, plus stale evidence on resume → [watchdog guide](../docs/guide.md#the-watchdog-nudges-retries-and-questions-to-you)
+
 - 2026-11-22 · devin/SWE-2 · released v0.2.0: committed the fleet/harnesses/i18n/watchdog batch as b889876, pushed main and the tag, release workflow green on all four targets; verified all four archives against SHA256SUMS, ran the macOS arm64 binary (`zori 0.2.0` + smoke-echo), dispatched the tap's Update Zori and `brew upgrade` installed 0.2.0 → [release](https://github.com/metravod/zori/releases/tag/v0.2.0)
 
 - 2026-11-22 · codex/GPT-6 · enabled retrying a failed node with an edited model during its active level, kept the join behind the retry, and made pending nodes recoverable after server restart. Verified both controls in Chromium with a local test harness → [console guide](../docs/guide.md)

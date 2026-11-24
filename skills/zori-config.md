@@ -103,6 +103,9 @@ scratch), `ask` (the agent may park a question with an `ASK: ...` line),
 `unattended` (night mode, don't ask), `ask_timeout_secs`. The defaults are
 `nudges:1 retry:1 ask:on` — usually left untouched. Set `optional: true` on
 best-effort branches of the fan-out so one failed leg doesn't sink the join.
+In the console, recent agent output or Coddy transcript activity earns another
+ten minutes at each deadline. Set `watchdog: {extend_on_progress: false}` on a
+task or flow when it needs a hard timeout.
 
 ## Minimal example (review fan-out + summary)
 

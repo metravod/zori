@@ -143,7 +143,7 @@ pub struct TaskPos {
     pub y: f64,
 }
 
-/// Supervision settings — what zori does *after* an attempt ends (the
+/// Supervision settings for running and completed attempts (the
 /// "watchdog"). Partial by design: every field is optional, an unset field
 /// inherits the flow-level block (or the built-in default), so a task can
 /// tighten one knob (`watchdog: {nudges: 3}`) without restating the rest.
@@ -163,6 +163,9 @@ pub struct TaskPos {
 ///     operator before the node fails (0 = forever). Default 0.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 pub struct Watchdog {
+    /// Give an active console agent another ten minutes at its deadline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extend_on_progress: Option<bool>,
     /// Overnight mode: the prompt says "don't ask", and a question that
     /// slips through anyway is auto-answered, not parked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -210,6 +213,9 @@ impl Task {
 /// to `Some(..)` replaces the built-in; `extra_args` is appended, not replaced.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct HarnessOverride {
+    /// Continue a text-only CLI using the node's saved prompt and replies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_chat: Option<bool>,
     /// Short routing advice for the flow planner.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,

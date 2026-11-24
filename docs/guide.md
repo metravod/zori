@@ -62,6 +62,13 @@ The console persists run state on disk and reloads it after a restart. Use the r
 The console supervises first
 runs, reruns and their automatic follow-ups. A manual chat steer runs once. Classic `zori run` executes each task once.
 
+- At an agent's deadline the console checks the last ten minutes for fresh
+  stdout bytes (including a partial line) or a new transcript write from the
+  current Coddy session. With evidence of activity, the same attempt gets ten
+  more minutes and the node transcript records the reason. Each extension
+  requires fresh evidence. Silence, stderr diagnostics and Zori heartbeats
+  alone leave the deadline in force. Set `watchdog: {extend_on_progress: false}`
+  on the flow or a task for a hard timeout. Batch `zori run` keeps its hard timeout.
 - **An unfinished reply** (the `<response clipped` marker, empty assistant text,
   or an entire reply consisting of placeholders such as "Continuing…") is **nudged**: the *same* session is resumed with a message that
   orders the model to stop working and produce the final answer now — a naive
@@ -118,6 +125,7 @@ watchdog:
   unattended: true      # "don't ask" preamble + canned auto-answers
   ask: true             # teach the ASK: protocol (default)
   nudges: 1             # auto-continues for unfinished replies (default 1)
+  extend_on_progress: true # extend an active attempt at its deadline
   retry: 1              # from-scratch retries for failed attempts (default 1)
   ask_timeout_secs: 0   # how long a parked question waits (0 = forever)
 tasks:
@@ -126,12 +134,9 @@ tasks:
 ```
 
 Absent block = the defaults shown (the supervisor is on; `ask: false` +
-`nudges: 0` + `retry: 0` switches it off). The protocol preamble is mixed
-only into the built-in agent harnesses (coddy/codex/opencode) — a custom
-`harnesses:` override often takes a path or a one-shot script as its prompt,
-where an appended section would corrupt the value; those still get
-retries, but their questions stay in the output (they have no resumable
-session to park). The console posts `{node, question_id, text}` to
+`nudges: 0` + `retry: 0` switches it off). Coddy, Codex and OpenCode receive the question protocol by default.
+Text CLIs can opt in with `transcript_chat: true` in their harness definition.
+The console posts `{node, question_id, text}` to
 `/api/runs/:id/answer`. Older clients can omit the ID for a single
 unanswered question on a waiting node. Each ID accepts one answer.
 
@@ -236,6 +241,7 @@ The schema is the same map of overrides a flow accepts:
 # ~/.zori/harnesses.yml
 devin:
   description: "Devin CLI (SWE-2 models)."
+  transcript_chat: true
   command: ["devin"]
   model_flag: "--model"
   prompt_via: arg
@@ -248,10 +254,13 @@ devin:
     swe-2-high: "Stronger SWE-2 — hard fixes."
 ```
 
-`command` is the only required field for a new id. A user-defined harness is
-fire-and-forget in v1: sessions are not resumable, so the watchdog retries
-from scratch and console chats cannot steer it (the planner brief says so
-honestly). `zori harnesses` lists every resolvable harness with its source
+`command` is the only required field for a new id. With `transcript_chat: true`, the console shows the agent's
+`ASK:` or `ASK_INLINE:` message in a question card. Answer there to continue.
+A follow-up starts the same CLI in the node directory with the saved prompt,
+previous replies and your message. Each turn uses the task's configured model
+and tool permissions. A finished node also accepts messages through **Send & steer**.
+Older completed runs can recover the conversation from a matching saved attempt.
+`zori harnesses` lists every resolvable harness with its source
 (`builtin` / `personal`), whether per-run models work and whether the binary
 was found on PATH.
 

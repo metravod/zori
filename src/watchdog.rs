@@ -18,6 +18,8 @@
 //!     sessions, mailboxes and artifacts); everything decidable without them
 //!     is here so it is unit-testable.
 
+pub(crate) mod activity;
+
 use crate::config::{Flow, Task, Watchdog};
 
 /// Marker a harness prints when it cut the reply short (budget/context
@@ -30,6 +32,7 @@ const ASK_PREFIX: &str = "ASK:";
 /// Fully-resolved supervision settings: every `Option` folded to its default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Settings {
+    pub extend_on_progress: bool,
     /// Overnight mode: "don't ask" preamble + canned auto-answer.
     pub unattended: bool,
     /// Teach the agent the `ASK:` convention (and honour it).
@@ -49,6 +52,7 @@ impl Settings {
     /// ask: false` switches it off).
     pub fn defaults() -> Self {
         Settings {
+            extend_on_progress: true,
             unattended: false,
             ask: true,
             nudges: 1,
@@ -84,6 +88,10 @@ impl Settings {
         if let Some(w) = task {
             apply(w);
         }
+        // Preserve the existing all-off watchdog configuration.
+        s.extend_on_progress = task.and_then(|w| w.extend_on_progress)
+            .or_else(|| flow.and_then(|w| w.extend_on_progress))
+            .unwrap_or(s.ask || s.nudges > 0 || s.retry > 0);
         s
     }
 
@@ -224,6 +232,28 @@ pub fn accept_opencode_report(facts: &Attempt, events: &crate::connectors::Openc
         && judge(&Attempt { success: true, ..*facts }, true) == Verdict::Ok
 }
 
+/// A headless Devin that lost tool access can exit successfully with a plain
+/// question and optional choices. Keep fenced examples and report prose out.
+pub fn devin_access_question<'a>(reply: &'a str, stderr: &str) -> Option<&'a str> {
+    if !stderr.contains("rejected a tool call that requires confirmation") { return None; }
+    let mut fence = None;
+    let mut candidate = None;
+    for line in reply.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        if line.starts_with("```") || line.starts_with("~~~") {
+            protocol_line(line, &mut fence);
+            candidate = None;
+        } else if fence.is_none() {
+            if line.ends_with('?') && !line.starts_with(['>', '#', '-', '*']) {
+                candidate = Some(line);
+            } else if !line.starts_with("- ") && !line.starts_with("* ") && !line.split_once(". ")
+                .is_some_and(|(n, _)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())) {
+                candidate = None;
+            }
+        }
+    }
+    candidate
+}
+
 /// The first standalone blocking or inline question outside a fenced example.
 pub fn ask_of(reply: &str) -> Option<String> {
     let mut fence = None;
@@ -335,15 +365,9 @@ pub fn preamble_for_classic(flow: &Flow, task: &Task) -> Option<String> {
     preamble(&s)
 }
 
-/// Which harnesses get the protocol preamble mixed into their prompt: the
-/// built-in agent CLIs zori knows how to steer. Custom `harnesses:` overrides
-/// are deliberately excluded — their "prompt" is often an argv path or a
-/// one-shot script (e.g. `sh -c 'cat "$1"'`), where an appended section
-/// corrupts the value; and zori cannot resume them (Opaque session), so the
-/// ASK convention would be a dead end anyway. A new built-in agent joins
-/// this list together with `connectors::track_args`.
+/// Only CLIs with a conversation contract receive operator instructions.
 pub fn preamble_applies(conn: &crate::connectors::Connector) -> bool {
-    conn.is_agent && matches!(conn.id.as_str(), "coddy" | "codex" | "opencode")
+    conn.is_agent && crate::connectors::steerable(conn)
 }
 
 #[cfg(test)]
@@ -384,12 +408,13 @@ mod tests {
     fn defaults_switch_the_supervisor_on() {
         let d = Settings::defaults();
         assert_eq!(d, Settings::resolve(None, None));
-        assert_eq!(d, Settings { unattended: false, ask: true, nudges: 1, retry: 1, ask_timeout_secs: 0 });
+        assert_eq!(d, Settings { extend_on_progress: true, unattended: false, ask: true, nudges: 1, retry: 1, ask_timeout_secs: 0 });
     }
 
     #[test]
     fn task_overrides_flow_overrides_defaults() {
         let flow = Watchdog {
+            extend_on_progress: Some(false),
             unattended: Some(true),
             ask: Some(true),
             nudges: Some(2),
@@ -397,6 +422,7 @@ mod tests {
             ask_timeout_secs: Some(600),
         };
         let s = Settings::resolve(Some(&flow), None);
+        assert!(!s.extend_on_progress);
         assert!(s.unattended && s.ask && s.nudges == 2 && s.retry == 0 && s.ask_timeout_secs == 600);
 
         // The task restates one knob; the rest inherit from the flow.

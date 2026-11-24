@@ -22,6 +22,7 @@ use crate::config::{HarnessOverride, PromptVia, Task};
 /// A fully-resolved connector: built-in merged with any user override.
 #[derive(Debug, Clone)]
 pub struct Connector {
+    pub transcript_chat: bool,
     pub id: String,
     /// Base argv before per-task flags (e.g. `["coddy"]`, or the zcode entry).
     pub command: Vec<String>,
@@ -228,6 +229,7 @@ fn builtin(id: &str) -> Option<Connector> {
         // the brief as a `# <id>` section (dependency edges carry data, see
         // `render_prompt`). Gives the canvas a first block to draw edges from.
         "prompt" => Connector {
+            transcript_chat: false,
             id: id.into(),
             command: vec![],
             model_flag: None,
@@ -242,6 +244,7 @@ fn builtin(id: &str) -> Option<Connector> {
             is_agent: false,
         },
         "coddy" => Connector {
+            transcript_chat: false,
             id: id.into(),
             command: vec!["coddy".into()],
             model_flag: Some("--model".into()),
@@ -258,6 +261,7 @@ fn builtin(id: &str) -> Option<Connector> {
             is_agent: true,
         },
         "codex" => Connector {
+            transcript_chat: false,
             id: id.into(),
             command: vec!["codex".into(), "exec".into()],
             model_flag: Some("-m".into()),
@@ -276,6 +280,7 @@ fn builtin(id: &str) -> Option<Connector> {
             is_agent: true,
         },
         "zcode" => Connector {
+            transcript_chat: false,
             id: id.into(),
             command: vec!["node".into(), ZCODE_ENTRY.into()],
             model_flag: None,
@@ -306,6 +311,7 @@ fn builtin(id: &str) -> Option<Connector> {
         // Verified live on this box: v2.3.0, `run --help` + a PONG round-trip
         // + session resume by `-s <id>` (see the opencode connector thread).
         "opencode" => Connector {
+            transcript_chat: false,
             id: id.into(),
             command: vec!["opencode".into(), "run".into()],
             model_flag: Some("--model".into()),
@@ -325,6 +331,7 @@ fn builtin(id: &str) -> Option<Connector> {
             is_agent: true,
         },
         "echo" => Connector {
+            transcript_chat: false,
             id: id.into(),
             command: vec!["echo".into()],
             model_flag: None,
@@ -441,6 +448,7 @@ fn user_defined(id: &str, o: &HarnessOverride) -> Result<Connector> {
         None => bail!("harness '{id}' needs a command (no built-in and no command override)"),
     };
     Ok(Connector {
+        transcript_chat: o.transcript_chat.unwrap_or(false),
         id: id.into(),
         command,
         model_flag: o.model_flag.clone(),
@@ -461,6 +469,10 @@ fn user_defined(id: &str, o: &HarnessOverride) -> Result<Connector> {
 /// Apply an override on top of any connector (built-in or user-defined):
 /// a `Some(..)` field replaces, `extra_args` append, `env` merges per key.
 fn apply_override(c: &mut Connector, o: &HarnessOverride) {
+    // Native session protocols take precedence.
+    if c.id == "zcode" {
+        if let Some(enabled) = o.transcript_chat { c.transcript_chat = enabled; }
+    }
     if let Some(cmd) = &o.command {
         if !cmd.is_empty() {
             c.command = cmd.clone();
@@ -498,6 +510,7 @@ fn compose_over(flow: &HarnessOverride, personal: &HarnessOverride) -> HarnessOv
     let mut env = personal.env.clone();
     env.extend(flow.env.iter().map(|(k, v)| (k.clone(), v.clone())));
     HarnessOverride {
+        transcript_chat: flow.transcript_chat.or(personal.transcript_chat),
         description: flow.description.clone().or_else(|| personal.description.clone()),
         model_notes: if flow.model_notes.is_empty() { personal.model_notes.clone() } else { flow.model_notes.clone() },
         command: flow.command.clone().or_else(|| personal.command.clone()),
@@ -821,6 +834,7 @@ pub fn resume_plan(
             // here means a caller forgot to special-case echo.
             bail!("echo sessions are steered without spawning; not a connector error")
         }
+        crate::state::SessionRef::Transcript { .. } => bail!("transcript follow-ups require the saved task prompt"),
         crate::state::SessionRef::Opaque { detail } => {
             bail!("this session cannot be steered ({detail})")
         }
@@ -890,7 +904,7 @@ pub fn parse_codex_jsonl(stdout: &str) -> CodexEvent {
 /// True when a harness family can be steered through the console. Drives the
 /// UI (input box enabled) and gates `resume_plan`.
 pub fn steerable(conn: &Connector) -> bool {
-    matches!(conn.id.as_str(), "coddy" | "codex" | "opencode" | "echo")
+    conn.transcript_chat || matches!(conn.id.as_str(), "coddy" | "codex" | "opencode" | "echo")
 }
 
 /// A parsed view of `opencode run --format json` output: the resume key plus
@@ -1555,6 +1569,7 @@ mod tests {
 
     fn devin_like() -> HarnessOverride {
         HarnessOverride {
+            transcript_chat: None,
             description: Some("Devin CLI".into()),
             model_notes: Default::default(),
             command: Some(vec!["devin".into()]),

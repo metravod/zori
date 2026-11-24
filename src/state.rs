@@ -125,6 +125,8 @@ pub enum SessionRef {
     /// it just appends turns and replies with a canned echo — no model, which
     /// is what lets the whole steering path be tested in CI.
     Echo,
+    /// The previous attempt holds the conversation prompt and the agent's reply.
+    Transcript { attempt: String },
     /// A harness zori does not know how to resume; steering is disabled.
     Opaque { detail: String },
 }

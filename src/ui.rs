@@ -2289,6 +2289,7 @@ pub async fn load_run(
     )
     .with_context(|| format!("reinitialising run '{}'", snap.run_id))?;
 
+    tracked.restore_transcript_chats(&mut snap);
     let emitter = Emitter::new(snap);
     let id = emitter.snapshot().run_id.clone();
     runs_guard(&state.runs).insert(
