@@ -11,7 +11,9 @@ before more features land on it. Findings only — plan and work come later,
 by the human's call. Each finding taken into work gets its own thread.
 
 **Where we got:** review done at a391aad (v0.2.1); work on branch
-`refactor/one-engine` (base d76980c), reported at 2026-11-25:
+`refactor/one-engine` (base d76980c), reported at 2026-11-25. The branch was
+lost unmerged the same day ([follow-ups](one-engine-followups.md)); the
+"done" below describes the lost work, not main:
 
 - **F1 — done** (67d351d, review fixes 7013642). `zori run` and the console
   drive `TrackedRun::run_all`; `runner::run`, `run_task` and `spawn_captured`
@@ -55,4 +57,4 @@ this record rests on the stage reports.
 **Open:** the branch is unmerged, see [follow-ups](one-engine-followups.md);
 `web/index.html` split deferred to D14.
 
-**Next step:** recover the branch (see follow-ups), then merge to main.
+**Next step:** redo F1/F2/F4 by rerunning the flow (see follow-ups), then merge to main.

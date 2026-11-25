@@ -12,6 +12,6 @@ by: devin/sonnet-5.5
 
 **Not verified:** no reproduction was run; the claim is the reviewer's, read from the code.
 
-**Open:** whether to install a SIGHUP handler beside the existing death handlers in `src/runner/process.rs` and block retries once shutdown starts.
+**Open:** whether to install a SIGHUP handler beside the existing death handlers in the runner's process module (`src/runner.rs` on main; `src/runner/process.rs` after the split) and block retries once shutdown starts.
 
 **Next step:** reproduce with a flow of `sleep` tasks and `kill -HUP` on the zori pid, then add a regression test next to the SIGINT one.

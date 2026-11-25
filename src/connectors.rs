@@ -42,14 +42,14 @@ pub struct Connector {
     pub prompt_file_args: Vec<String>,
     /// Whether the harness honours a per-run model at all.
     pub supports_model: bool,
-    /// Built-in trailing args (e.g. codex's `-s workspace-write`), before the
+    /// Built-in trailing args (e.g. codex's `-s danger-full-access`), before the
     /// task's own `args`.
     pub extra_args: Vec<String>,
     /// Flags in `extra_args` that a task's own `args` may *replace* rather than
     /// sit next to. When a task supplies any of these flags, the connector
     /// drops its built-in occurrence (flag plus its value) so the CLI sees a
     /// single value — matching single-value flag semantics (e.g. codex's
-    /// `-s <mode>`, where emitting `-s workspace-write -s read-only` is wrong
+    /// `-s <mode>`, where emitting `-s danger-full-access -s read-only` is wrong
     /// and only works by clap last-wins luck). Aliases of the same flag (e.g.
     /// `-s` and `--sandbox`) belong to one group: supplying any one replaces
     /// the built-in occurrences of all of them. Only flags whose value never
@@ -278,9 +278,14 @@ fn builtin(id: &str) -> Option<Connector> {
             prompt_file_args: vec![],
             supports_model: true,
             // Non-interactive exec needs a sandbox policy to be predictable.
-            extra_args: vec!["-s".into(), "workspace-write".into()],
+            // `workspace-write` keeps `.git` read-only and the network off, so a
+            // headless agent could neither fetch nor commit and fell back to a
+            // /tmp clone that a later task deleted. Full access, like Devin's
+            // `--permission-mode dangerous`; a reviewer narrows it with
+            // args: ["-s", "read-only"].
+            extra_args: vec!["-s".into(), "danger-full-access".into()],
             // A task that passes its own sandbox policy replaces the built-in
-            // `-s workspace-write` rather than emitting a second `-s`.
+            // `-s danger-full-access` rather than emitting a second `-s`.
             replaceable_flags: vec!["-s".into(), "--sandbox".into()],
             env: BTreeMap::new(),
             is_agent: true,
@@ -625,7 +630,7 @@ pub fn plan(conn: &Connector, task: &Task, prompt: &str, cwd_flag: Option<&Path>
     // Built-in trailing args, unless the task re-specifies one of the
     // connector's single-value flags — then the built-in occurrence (flag plus
     // its value) is dropped so the CLI sees a single value (e.g. codex `-s`),
-    // not two. Without this, a read-only reviewer got both `-s workspace-write`
+    // not two. Without this, a read-only reviewer got both `-s danger-full-access`
     // and `-s read-only`, working only by clap last-wins luck.
     let extra: Vec<String> = if !conn.replaceable_flags.is_empty()
         && task.args.iter().any(|a| flag_in_group(a, &conn.replaceable_flags))
@@ -1098,7 +1103,7 @@ mod resume_tests {
         assert!(a.ends_with("clarify please"), "{a}");
         // The two footguns proven by the spike: resume must NOT carry -s or -m.
         assert!(!a.contains(" -s "), "resume must not carry -s: {a}");
-        assert!(!a.contains("workspace-write"), "no default sandbox on resume: {a}");
+        assert!(!a.contains("danger-full-access"), "no default sandbox on resume: {a}");
         assert!(!a.contains(" -m "), "no model flag on resume: {a}");
         assert_eq!(p.program, "codex");
     }
@@ -1307,7 +1312,7 @@ mod tests {
     }
 
     // The bug the new read-only reviewer step exposed: `codex exec ...
-    // -s workspace-write -s read-only`. Re-specifying a single-value flag must
+    // -s danger-full-access -s read-only`. Re-specifying a single-value flag must
     // REPLACE the built-in occurrence, not sit next to it.
     #[test]
     fn codex_sandbox_is_replaced_not_duplicated() {
@@ -1316,7 +1321,7 @@ mod tests {
         assert_eq!(count_flag(&p.argv, &["-s", "--sandbox"]), 1, "one -s: {:?}", p.argv);
         assert!(p.argv.iter().any(|t| t == "read-only"), "{:?}", p.argv);
         assert!(
-            !p.argv.iter().any(|t| t == "workspace-write"),
+            !p.argv.iter().any(|t| t == "danger-full-access"),
             "built-in -s value must be dropped: {:?}",
             p.argv
         );
@@ -1333,7 +1338,7 @@ mod tests {
     // but the FIRST-run argv was never asserted. This is the whole shape a
     // first codex turn must have: `exec`, model before cwd, the prompt as a
     // POSITIONAL (after -C <cwd>, before the built-in sandbox), and exactly the
-    // one `-s workspace-write`. Exact equality — a reorder (e.g. the prompt
+    // one `-s danger-full-access`. Exact equality — a reorder (e.g. the prompt
     // landing before `-C /work`, where codex would read it as the directory) is
     // a live regression the resume test cannot catch.
     #[test]
@@ -1349,7 +1354,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             p.argv,
-            g(&["codex", "exec", "-m", "gpt-5-codex", "-C", "/work", "do the thing", "-s", "workspace-write"]),
+            g(&["codex", "exec", "-m", "gpt-5-codex", "-C", "/work", "do the thing", "-s", "danger-full-access"]),
             "{:?}",
             p.argv
         );
@@ -1459,7 +1464,7 @@ mod tests {
         // followed by the built-in flags exactly where they always were.
         let plain = plan(&c, &task("t", "codex", &[]), "hello", None).unwrap();
         assert!(!plain.argv.iter().any(|t| t == "--"), "{:?}", plain.argv);
-        assert_eq!(plain.argv, g(&["codex", "exec", "hello", "-s", "workspace-write"]), "{:?}", plain.argv);
+        assert_eq!(plain.argv, g(&["codex", "exec", "hello", "-s", "danger-full-access"]), "{:?}", plain.argv);
     }
 
     // Review M5: the tracked executor appended track_args blindly, so on a
@@ -1494,7 +1499,7 @@ mod tests {
         let p = plan(&builtin("codex").unwrap(), &task("r", "codex", &["--sandbox=read-only"]), "hi", None).unwrap();
         assert_eq!(count_flag(&p.argv, &["-s", "--sandbox"]), 1, "{:?}", p.argv);
         assert!(
-            !p.argv.iter().any(|t| t == "workspace-write"),
+            !p.argv.iter().any(|t| t == "danger-full-access"),
             "{:?}",
             p.argv
         );
@@ -1513,7 +1518,7 @@ mod tests {
         assert!(flag_in_group("-s", &grp));
         assert!(flag_in_group("--sandbox=read-only", &grp));
         assert!(!flag_in_group("--foo", &grp));
-        assert_eq!(strip_flag_group(&g(&["-m", "x", "-s", "workspace-write"]), &grp), g(&["-m", "x"]));
+        assert_eq!(strip_flag_group(&g(&["-m", "x", "-s", "danger-full-access"]), &grp), g(&["-m", "x"]));
         assert_eq!(strip_flag_group(&g(&["--sandbox=r"]), &grp), Vec::<String>::new());
     }
 

@@ -213,6 +213,8 @@ its own heading below).
 | opencode | ✅ | `opencode run --model <id> "<prompt>"` — ids are `provider/model[#variant]` (`opencode models` lists yours); unknown ids fail loudly |
 | zcode | ❌ | bundled CLI has **no `--model` flag**; model is per-session (`/model`). Set it out-of-band, or zori errors rather than ignoring your `model:` |
 
+Codex runs with `-s danger-full-access`. Its `workspace-write` sandbox keeps `.git` read-only and the network off, so a headless agent can neither fetch nor commit. A task narrows it with its own `args`, e.g. a reviewer with `args: ["-s", "read-only"]`; the task's `-s` replaces the built-in one.
+
 The experimental ZCode connector targets its bundled macOS CLI. Version 0.1 supports Coddy, Codex and OpenCode for headless model runs. Use `ZORI_CODDY_BIN`, `ZORI_CODEX_BIN` or `ZORI_OPENCODE_BIN` to select another executable.
 
 For the harnesses that do honour `model:`, zori can show you the *real* list

@@ -1,4 +1,11 @@
+---
+status: active
+updated: 2026-11-25
+by: devin/opus-5.5
+---
 # Stale node status after a dead attempt
+
+**Next step:** on shutdown, stop the watchdog from counting the killed child as a failed attempt, block retries, and persist a terminal status before exit; regression test: kill `zori ui` mid-attempt.
 
 Seen 2026-11-23 on a `swe-review` console run (devin harness): the node's
 restart attempt died in ~2s (fixed separately — relative `--prompt-file`
