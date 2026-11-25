@@ -1,5 +1,7 @@
 # Log
 
+- 2026-11-25 · devin/opus-5.5 · released v0.2.3 (codex `-s danger-full-access`): committed 859ae3c, pushed main and the tag, release workflow green on all four targets; all archives match SHA256SUMS, macOS arm64 binary reports `zori 0.2.3`; dispatched the tap's Update Zori, `brew upgrade metravod/tap/zori` installed 0.2.3 → [release](https://github.com/metravod/zori/releases/tag/v0.2.3)
+
 - 2026-11-25 · devin/opus-5.5 · dream: brief cut from 8979 to ~3900 characters (feature history behind the log), Now and Next reflect the lost `refactor/one-engine` and the decision to redo it by rerun; D13 and the review/follow-up threads say the branch is lost; stale-status thread got frontmatter and a next step; release, tap and local install claims rechecked (`gh release view`, tap formula, `brew list`); `omut check` 0 errors, 0 warnings → [brief](brief.md)
 
 - 2026-11-25 · devin/opus-5.5 · codex harness defaults to `-s danger-full-access`: under `workspace-write` `.git` is read-only and the network is off (reproduced with `codex sandbox`), so `f1-engine` worked in a /tmp clone, and the coddy `verify` node `rm -rf`'d it — that is how `refactor/one-engine` was lost. Live `zori run` codex task committed and reached GitHub; 213 Rust checks, clippy clean → [connectors.rs](../src/connectors.rs), [thread](threads/one-engine-followups.md). Recorded D15 (bypass by default, user-switchable) and the switch as a goal in Next.
