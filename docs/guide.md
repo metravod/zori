@@ -215,6 +215,8 @@ its own heading below).
 
 Codex runs with `-s danger-full-access`. Its `workspace-write` sandbox keeps `.git` read-only and the network off, so a headless agent can neither fetch nor commit. A task narrows it with its own `args`, e.g. a reviewer with `args: ["-s", "read-only"]`; the task's `-s` replaces the built-in one.
 
+OpenCode runs with `--auto`: a non-interactive run rejects every permission your `opencode.json` sets to `ask`, since it cannot prompt. A task turns it off with `args: ["--auto=false"]`.
+
 The experimental ZCode connector targets its bundled macOS CLI. Version 0.1 supports Coddy, Codex and OpenCode for headless model runs. Use `ZORI_CODDY_BIN`, `ZORI_CODEX_BIN` or `ZORI_OPENCODE_BIN` to select another executable.
 
 For the harnesses that do honour `model:`, zori can show you the *real* list
@@ -253,8 +255,10 @@ devin:
   # Headless runs cannot answer approval prompts: under accept-edits every
   # shell command is rejected. Bypass approves all tools; a read-only
   # reviewer narrows it with args: ["--permission-mode", "auto"].
-  extra_args: ["--permission-mode", "dangerous"]
-  replaceable_flags: ["--permission-mode"]   # a task's args may swap it
+  # Print mode also refuses any directory not yet trusted interactively,
+  # so the trust check is skipped too.
+  extra_args: ["--permission-mode", "dangerous", "--respect-workspace-trust", "false"]
+  replaceable_flags: ["--permission-mode", "--respect-workspace-trust"]   # a task's args may swap them
   models_cmd: ["sh", "-c", "devin models list --format json | jq -r '.families[].variants[].model_uid'"]
   model_notes:
     swe-2-high: "Stronger SWE-2 — hard fixes."

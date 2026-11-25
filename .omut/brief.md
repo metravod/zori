@@ -18,7 +18,7 @@ Zori is a Rust CLI and an embedded local web console. A YAML flow connects tasks
 
 ## Now
 Release history and the checks behind each feature are in the [log](log.md).
-**2026-11-25:** the built-in codex harness runs with `-s danger-full-access` (D15). Under `workspace-write` `.git` is read-only and the network is off, so headless codex could neither fetch nor commit. A live `zori run` codex task committed and reached GitHub; shipped in v0.2.3. Devin already runs with `--permission-mode dangerous`.
+**2026-11-25:** the built-in codex harness runs with `-s danger-full-access` (D15). Under `workspace-write` `.git` is read-only and the network is off, so headless codex could neither fetch nor commit. A live `zori run` codex task committed and reached GitHub; shipped in v0.2.3. Devin runs with `--permission-mode dangerous --respect-workspace-trust false` (personal store), OpenCode with `--auto` on first run and resume (not released yet); coddy has no rights switch and can do everything.
 **2026-11-25:** the engine merge (D13, F1/F2/F4 of the [review](threads/code-review-2026-11-24.md)) was done on `refactor/one-engine` and then lost: a later flow node deleted the only /tmp clone. The human chose to redo it by rerunning the flow on the fixed version. See [follow-ups](threads/one-engine-followups.md).
 **2026-11-25:** console UI audited — a config editor with no view for comparing agents. Redesign order and open D14 are in the [thread](threads/console-ui-redesign.md).
 **Verified 2026-11-25:** v0.2.3 released with the codex sandbox fix: [release run](https://github.com/metravod/zori/actions/runs/45674710887) green on all four targets, all archives match SHA256SUMS, the macOS arm64 archive reports `zori 0.2.3`; after the [tap update](https://github.com/metravod/homebrew-tap/actions/runs/45676197047) `brew upgrade` installed 0.2.3. Earlier releases passed the same bar.
@@ -29,7 +29,7 @@ Release history and the checks behind each feature are in the [log](log.md).
 
 ## Next
 - Rerun `zori-flows/zori-review-f1-f4.yml` on the fixed version to redo the engine merge; forbid the verify node to delete anything outside its own directory first. See the [thread](threads/one-engine-followups.md).
-- Add a switch for agents' permission mode (D15): bypass stays the default, but a user can turn the dangerous mode off for every harness at once (personal setting, per flow, per task), mapped to each CLI's own flag (codex `-s`, Devin `--permission-mode`, …).
+- Add a switch for agents' permission mode (D15): bypass stays the default, but a user can turn the dangerous mode off for every harness at once (personal setting, per flow, per task), mapped to each CLI's own flag (codex `-s`, Devin `--permission-mode`, opencode `--auto`, zcode `--mode`; coddy has none).
 - Validate the planner proposal and rerun interactions in a browser with installed agents.
 - Implement the agreed worktree design for parallel edits. See the [thread](threads/worktree-isolation.md).
 - Redesign the console around comparison and supervision; decide D14 first. See the [thread](threads/console-ui-redesign.md).

@@ -2381,7 +2381,7 @@ impl TrackedRun {
                 (sp, Some(SessionRef::Transcript { attempt: nonce.clone() }), prompt)
             }
             ExecMode::Resume(session, human) => {
-                let sp = connectors::resume_plan(&conn, session, human, Some(&cwd))?;
+                let sp = connectors::resume_plan(&conn, session, human, Some(&cwd), &task.args)?;
                 // Reuse the stored session handle (context must persist).
                 (sp, Some(session.clone()), human.clone())
             }

@@ -334,12 +334,15 @@ fn builtin(id: &str) -> Option<Connector> {
             prompt_file_flag: None,
             prompt_file_args: vec![],
             supports_model: true,
-            // Nothing baked in: non-interactive runs already auto-approve
-            // permissions (proven by a headless file-write probe), and the
-            // operator's opencode.jsonc governs the rest. `--auto` and friends
-            // stay available through the task's own `args`.
-            extra_args: vec![],
-            replaceable_flags: vec![],
+            // A non-interactive run rejects every permission the operator's
+            // config sets to `ask` (it cannot prompt), so bypass by default
+            // (D15): `--auto` approves all that is not explicitly denied. A
+            // task narrows it with args: ["--auto=false"]. `--auto` takes no
+            // value; it is safe in replaceable_flags only while it is the
+            // last built-in arg, since stripping a bare flag also drops the
+            // token after it.
+            extra_args: vec!["--auto".into()],
+            replaceable_flags: vec!["--auto".into()],
             env: BTreeMap::new(),
             is_agent: true,
         },
@@ -766,6 +769,7 @@ pub fn resume_plan(
     session: &crate::state::SessionRef,
     prompt: &str,
     cwd: Option<&std::path::Path>,
+    task_args: &[String],
 ) -> Result<SpawnPlan> {
     match session {
         crate::state::SessionRef::Coddy { sessions_dir, session_id } => {
@@ -840,6 +844,15 @@ pub fn resume_plan(
             full.push("json".into());
             full.push("-s".into());
             full.push(session_id.clone());
+            // Permissions are per process, not stored in the session: carry
+            // the first run's effective `--auto` (the task's own, else the
+            // built-in) or a follow-up could not run a single `ask` tool.
+            let own: Vec<String> = task_args.iter().filter(|a| flag_in_group(a, &conn.replaceable_flags)).cloned().collect();
+            if own.is_empty() {
+                full.extend(conn.extra_args.iter().filter(|a| flag_in_group(a, &conn.replaceable_flags)).cloned());
+            } else {
+                full.extend(own);
+            }
             // The prompt is a trailing positional argument.
             full.push(prompt.to_string());
             Ok(SpawnPlan {
@@ -1069,7 +1082,7 @@ mod resume_tests {
             sessions_dir: std::path::PathBuf::from("/tmp/run1/sessions"),
             session_id: "sess_alpha".into(),
         };
-        let p = resume_plan(&conn, &sess, "and again but shorter", None).unwrap();
+        let p = resume_plan(&conn, &sess, "and again but shorter", None, &[]).unwrap();
         let a = argv_str(&p);
         assert!(a.contains("-session-id sess_alpha"), "{a}");
         assert!(a.contains("-sessions-dir /tmp/run1/sessions"), "{a}");
@@ -1085,7 +1098,7 @@ mod resume_tests {
             sessions_dir: "/tmp/r".into(),
             session_id: "s".into(),
         };
-        let p = resume_plan(&conn, &sess, "hi", Some(std::path::Path::new("/work"))).unwrap();
+        let p = resume_plan(&conn, &sess, "hi", Some(std::path::Path::new("/work")), &[]).unwrap();
         let a = argv_str(&p);
         assert!(a.contains("--cwd /work"), "{a}");
     }
@@ -1094,7 +1107,7 @@ mod resume_tests {
     fn codex_resume_is_by_id_without_sandbox_or_model() {
         let conn = builtin("codex").unwrap();
         let sess = SessionRef::Codex { thread_id: "tid-123".into() };
-        let p = resume_plan(&conn, &sess, "clarify please", None).unwrap();
+        let p = resume_plan(&conn, &sess, "clarify please", None, &[]).unwrap();
         let a = argv_str(&p);
         assert!(a.contains("exec resume"), "{a}");
         assert!(a.contains("--json"), "{a}");
@@ -1112,9 +1125,9 @@ mod resume_tests {
     fn opaque_and_echo_are_not_spliced_by_resume_plan() {
         let conn = builtin("coddy").unwrap();
         let o = SessionRef::Opaque { detail: "zcode".into() };
-        assert!(resume_plan(&conn, &o, "x", None).is_err());
+        assert!(resume_plan(&conn, &o, "x", None, &[]).is_err());
         let e = SessionRef::Echo;
-        assert!(resume_plan(&conn, &e, "x", None).is_err());
+        assert!(resume_plan(&conn, &e, "x", None, &[]).is_err());
     }
 
     // Review (minor): a blank resume key must be refused, not spliced. The CLI
@@ -1128,11 +1141,11 @@ mod resume_tests {
         let empty = SessionRef::Codex { thread_id: "".into() };
         let blank = SessionRef::Codex { thread_id: "   ".into() };
         for s in [empty, blank] {
-            let e = resume_plan(&conn, &s, "x", None).unwrap_err().to_string();
+            let e = resume_plan(&conn, &s, "x", None, &[]).unwrap_err().to_string();
             assert!(e.contains("blank"), "codex blank id must be refused loudly: {e}");
         }
         let conn = builtin("opencode").unwrap();
-        let e = resume_plan(&conn, &SessionRef::Opencode { session_id: "".into() }, "x", None)
+        let e = resume_plan(&conn, &SessionRef::Opencode { session_id: "".into() }, "x", None, &[])
             .unwrap_err()
             .to_string();
         assert!(e.contains("blank"), "opencode blank id must be refused loudly: {e}");
@@ -1154,7 +1167,7 @@ mod resume_tests {
         t.model = Some("zai-coding-plan/glm-5.3".into());
         let p = plan(&c, &t, "say PONG", None).unwrap();
         assert_eq!(p.program, "opencode");
-        // command base + model + positional prompt, in that order.
+        // command base + model + positional prompt + built-in `--auto`.
         assert_eq!(
             p.argv,
             vec![
@@ -1163,6 +1176,7 @@ mod resume_tests {
                 "--model".to_string(),
                 "zai-coding-plan/glm-5.3".to_string(),
                 "say PONG".to_string(),
+                "--auto".to_string(),
             ]
         );
         assert!(p.stdin_prompt.is_none() && p.file_prompt.is_none());
@@ -1172,7 +1186,7 @@ mod resume_tests {
     fn opencode_resume_is_by_session_id_with_json() {
         let conn = builtin("opencode").unwrap();
         let sess = SessionRef::Opencode { session_id: "ses_abc123".into() };
-        let p = resume_plan(&conn, &sess, "and now shorter", None).unwrap();
+        let p = resume_plan(&conn, &sess, "and now shorter", None, &[]).unwrap();
         let a = argv_str(&p);
         assert!(a.contains("run"), "keeps the run subcommand: {a}");
         assert!(a.contains("--format json"), "{a}");
@@ -1182,6 +1196,7 @@ mod resume_tests {
         assert!(!a.contains("--model"), "no model flag on resume: {a}");
         assert_eq!(p.program, "opencode");
     }
+
 
     #[test]
     fn opencode_jsonl_parses_session_and_texts_in_order() {
@@ -1332,6 +1347,26 @@ mod tests {
     fn codex_default_sandbox_kept_once() {
         let p = plan(&builtin("codex").unwrap(), &task("r", "codex", &[]), "hi", None).unwrap();
         assert_eq!(count_flag(&p.argv, &["-s", "--sandbox"]), 1, "{:?}", p.argv);
+    }
+
+    // A non-interactive opencode run rejects every `ask` permission, and
+    // permissions do not live in the session: the first run and every resume
+    // carry `--auto`, unless the task narrowed it.
+    #[test]
+    fn opencode_auto_approves_on_first_run_and_resume_unless_narrowed() {
+        let conn = builtin("opencode").unwrap();
+        let p = plan(&conn, &task("t", "opencode", &[]), "hi", None).unwrap();
+        assert_eq!(count_flag(&p.argv, &["--auto"]), 1, "{:?}", p.argv);
+        let sess = crate::state::SessionRef::Opencode { session_id: "ses_1".into() };
+        let r = resume_plan(&conn, &sess, "more", None, &[]).unwrap();
+        assert_eq!(count_flag(&r.argv, &["--auto"]), 1, "{:?}", r.argv);
+        assert_eq!(r.argv.last().map(String::as_str), Some("more"), "prompt stays last: {:?}", r.argv);
+        let narrowed = g(&["--auto=false"]);
+        let p = plan(&conn, &task("t", "opencode", &["--auto=false"]), "hi", None).unwrap();
+        assert_eq!(count_flag(&p.argv, &["--auto"]), 1, "{:?}", p.argv);
+        assert!(p.argv.contains(&"--auto=false".to_string()) && !p.argv.contains(&"--auto".to_string()), "{:?}", p.argv);
+        let r = resume_plan(&conn, &sess, "more", None, &narrowed).unwrap();
+        assert!(r.argv.contains(&"--auto=false".to_string()) && !r.argv.contains(&"--auto".to_string()), "{:?}", r.argv);
     }
 
     // Contract (review minor): resume is pinned by `codex_resume_is_by_id_…`
