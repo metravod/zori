@@ -1,5 +1,9 @@
 # Log
 
+- 2026-11-25 · devin/sonnet-5.5 · reviewed the F1–F4 work on branch refactor/one-engine (zori run and the console now share TrackedRun; runner.rs and ui.rs split into modules; history comments cut; 7 review findings fixed, 4 deferred, 2 rejected) and closed F3: a mixed-agent fan-out/join with a required and an optional failure behaves the same under `zori run` and the console API. Verified from the stage reports only — the branch is not in this checkout (see thread) → [review thread](threads/code-review-2026-11-24.md), [follow-ups](threads/one-engine-followups.md)
+
+- 2026-11-25 · devin/opus-5.5 · audited the console UI from live screenshots: it is a form-driven DAG editor with no comparison view, though comparing agents is the project's purpose; recorded a five-step redesign (compare view, attention inbox, live cards, intent-first layout, structured transcript) and opened D14 on the front-end foundation → [thread](threads/console-ui-redesign.md)
+
 - 2026-11-25 · devin/opus-5.5 · released v0.2.2: committed a60bbba, pushed main and the tag, release workflow green on all four targets; all archives match SHA256SUMS, the macOS arm64 binary reports `zori 0.2.2`; dispatched the tap's Update Zori, and `brew upgrade metravod/tap/zori` installed 0.2.2 → [release](https://github.com/metravod/zori/releases/tag/v0.2.2)
 
 - 2026-11-25 · devin/opus-5.5 · fixed Devin transcript follow-ups hanging: the continuation switches to `prompt_via: file` and dropped `-p`, so Devin opened an interactive session and printed nothing (17 min until Ctrl+C). New harness field `prompt_file_args` (emitted before `prompt_file_flag`); the transcript test's fake Devin now requires `-p`. Devin's default rights moved to `--permission-mode dangerous` (accept-edits rejected every shell command) in `~/.zori/harnesses.yml` and the guide; live `devin -p --prompt-file` ran a shell command. 213 Rust checks, clippy clean → [connectors.rs](../src/connectors.rs)
