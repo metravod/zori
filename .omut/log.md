@@ -1,5 +1,7 @@
 # Log
 
+- 2026-11-25 · devin/opus-5.5 · released v0.2.2: committed a60bbba, pushed main and the tag, release workflow green on all four targets; all archives match SHA256SUMS, the macOS arm64 binary reports `zori 0.2.2`; dispatched the tap's Update Zori, and `brew upgrade metravod/tap/zori` installed 0.2.2 → [release](https://github.com/metravod/zori/releases/tag/v0.2.2)
+
 - 2026-11-25 · devin/opus-5.5 · fixed Devin transcript follow-ups hanging: the continuation switches to `prompt_via: file` and dropped `-p`, so Devin opened an interactive session and printed nothing (17 min until Ctrl+C). New harness field `prompt_file_args` (emitted before `prompt_file_flag`); the transcript test's fake Devin now requires `-p`. Devin's default rights moved to `--permission-mode dangerous` (accept-edits rejected every shell command) in `~/.zori/harnesses.yml` and the guide; live `devin -p --prompt-file` ran a shell command. 213 Rust checks, clippy clean → [connectors.rs](../src/connectors.rs)
 
 - 2026-11-24 · devin/opus-5.5 · whole-project review recorded: two execution engines (open D13), oversized runner.rs/ui.rs/index.html, main scenario still unverified; tests 212 green, clippy clean → [review](threads/code-review-2026-11-24.md)
