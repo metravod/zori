@@ -37,6 +37,9 @@ pub struct Connector {
     pub prompt_arg: Option<String>,
     /// When `prompt_via == File`: the flag that takes the temp-file path.
     pub prompt_file_flag: Option<String>,
+    /// When `prompt_via == File`: args emitted just before `prompt_file_flag`
+    /// (Devin's print-mode `-p`, which arg mode sends as `prompt_arg`).
+    pub prompt_file_args: Vec<String>,
     /// Whether the harness honours a per-run model at all.
     pub supports_model: bool,
     /// Built-in trailing args (e.g. codex's `-s workspace-write`), before the
@@ -237,6 +240,7 @@ fn builtin(id: &str) -> Option<Connector> {
             prompt_via: PromptVia::Arg,
             prompt_arg: None,
             prompt_file_flag: None,
+            prompt_file_args: vec![],
             supports_model: false,
             extra_args: vec![],
             replaceable_flags: vec![],
@@ -252,6 +256,7 @@ fn builtin(id: &str) -> Option<Connector> {
             prompt_via: PromptVia::Arg,
             prompt_arg: Some("-p".into()),
             prompt_file_flag: Some("-prompt-file".into()),
+            prompt_file_args: vec![],
             supports_model: true,
             // coddy one-shot reads stdin unless told not to; we pass the prompt
             // by flag, so never attach stray stdin.
@@ -270,6 +275,7 @@ fn builtin(id: &str) -> Option<Connector> {
             // `codex exec [PROMPT]` takes the prompt as a positional argument.
             prompt_arg: None,
             prompt_file_flag: Some("-".into()),
+            prompt_file_args: vec![],
             supports_model: true,
             // Non-interactive exec needs a sandbox policy to be predictable.
             extra_args: vec!["-s".into(), "workspace-write".into()],
@@ -288,6 +294,7 @@ fn builtin(id: &str) -> Option<Connector> {
             prompt_via: PromptVia::Arg,
             prompt_arg: Some("-p".into()),
             prompt_file_flag: Some("-p".into()),
+            prompt_file_args: vec![],
             // Bundled zcode CLI has no per-run --model; model is per-session.
             supports_model: false,
             // --mode default for --prompt is `yolo`; we leave that to the
@@ -320,6 +327,7 @@ fn builtin(id: &str) -> Option<Connector> {
             // `opencode run [<message...>]` takes the prompt positionally.
             prompt_arg: None,
             prompt_file_flag: None,
+            prompt_file_args: vec![],
             supports_model: true,
             // Nothing baked in: non-interactive runs already auto-approve
             // permissions (proven by a headless file-write probe), and the
@@ -340,6 +348,7 @@ fn builtin(id: &str) -> Option<Connector> {
             // echo takes the whole prompt as one positional string.
             prompt_arg: None,
             prompt_file_flag: None,
+            prompt_file_args: vec![],
             supports_model: false,
             extra_args: vec![],
             replaceable_flags: vec![],
@@ -458,6 +467,7 @@ fn user_defined(id: &str, o: &HarnessOverride) -> Result<Connector> {
         // `prompt_arg:` wins (e.g. a CLI whose print flag is `--prompt`).
         prompt_arg: o.prompt_arg.clone().or_else(|| Some("-p".into())),
         prompt_file_flag: o.prompt_file_flag.clone(),
+        prompt_file_args: o.prompt_file_args.clone(),
         supports_model: o.model_flag.is_some(),
         extra_args: o.extra_args.clone(),
         replaceable_flags: o.replaceable_flags.clone(),
@@ -494,6 +504,9 @@ fn apply_override(c: &mut Connector, o: &HarnessOverride) {
     if o.prompt_file_flag.is_some() {
         c.prompt_file_flag = o.prompt_file_flag.clone();
     }
+    if !o.prompt_file_args.is_empty() {
+        c.prompt_file_args = o.prompt_file_args.clone();
+    }
     c.extra_args.extend(o.extra_args.iter().cloned());
     if !o.replaceable_flags.is_empty() {
         c.replaceable_flags = o.replaceable_flags.clone();
@@ -520,6 +533,7 @@ fn compose_over(flow: &HarnessOverride, personal: &HarnessOverride) -> HarnessOv
         prompt_arg: flow.prompt_arg.clone().or_else(|| personal.prompt_arg.clone()),
         extra_args: personal.extra_args.iter().cloned().chain(flow.extra_args.iter().cloned()).collect(),
         prompt_file_flag: flow.prompt_file_flag.clone().or_else(|| personal.prompt_file_flag.clone()),
+        prompt_file_args: if flow.prompt_file_args.is_empty() { personal.prompt_file_args.clone() } else { flow.prompt_file_args.clone() },
         models_cmd: if flow.models_cmd.is_empty() { personal.models_cmd.clone() } else { flow.models_cmd.clone() },
         replaceable_flags: if flow.replaceable_flags.is_empty() { personal.replaceable_flags.clone() } else { flow.replaceable_flags.clone() },
         env,
@@ -602,6 +616,7 @@ pub fn plan(conn: &Connector, task: &Task, prompt: &str, cwd_flag: Option<&Path>
                 );
             };
             file_prompt = Some(prompt.to_string());
+            argv.extend(conn.prompt_file_args.iter().cloned());
             argv.push(flag.clone());
             argv.push("__ZORI_PROMPT_FILE__".into());
         }
@@ -1411,6 +1426,22 @@ mod tests {
         assert!(p.stdin_prompt.is_none(), "file mode must not also feed stdin");
     }
 
+    // Devin's `-p` is both its print-mode switch and its `prompt_arg`; a
+    // transcript follow-up switches to file mode, and without `-p` Devin
+    // opened an interactive session that printed nothing until killed.
+    #[test]
+    fn file_prompt_keeps_print_mode_args_before_the_flag() {
+        let mut c = user_defined("devin", &devin_like()).unwrap();
+        let arg = plan(&c, &task("t", "devin", &[]), "hello", None).unwrap();
+        assert_eq!(arg.argv.iter().filter(|t| *t == "-p").count(), 1, "{:?}", arg.argv);
+        assert!(!arg.argv.iter().any(|t| t == "--prompt-file"), "{:?}", arg.argv);
+        c.prompt_via = PromptVia::File;
+        let file = plan(&c, &task("t", "devin", &[]), "hello", None).unwrap();
+        let at = file.argv.iter().position(|t| t == "--prompt-file").unwrap();
+        assert_eq!(&file.argv[at - 1..at + 2], ["-p", "--prompt-file", "__ZORI_PROMPT_FILE__"]);
+        assert_eq!(file.argv.iter().filter(|t| *t == "-p").count(), 1, "{:?}", file.argv);
+    }
+
     // Review F02: a positional prompt beginning with '-' was passed straight
     // through, so a prompt like `-r` became a CLI flag (prompt injection into
     // argv). It must travel last, after a `--` terminator, with the task's own
@@ -1579,6 +1610,7 @@ mod tests {
             prompt_arg: Some("-p".into()),
             extra_args: vec!["--permission-mode".into(), "accept-edits".into()],
             prompt_file_flag: Some("--prompt-file".into()),
+            prompt_file_args: vec!["-p".into()],
             models_cmd: vec!["sh".into(), "-c".into(), "echo swe-2-high".into()],
             replaceable_flags: vec!["--permission-mode".into()],
             env: Default::default(),

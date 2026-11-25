@@ -3197,13 +3197,11 @@ harnesses:
       - sh
       - -c
       - |
+        # Like the real Devin CLI: without `-p` it starts an interactive
+        # session and never prints a reply, so a follow-up must keep `-p`.
+        test "$1" = -p || exit 6
+        shift
         case "$1" in
-          -p)
-            case "$2" in *'ASK_INLINE:'*) ;; *) exit 7 ;; esac
-            echo 'warning: rejected a tool call that requires confirmation.' >&2
-            echo 'How would you like me to proceed?'
-            echo '- Provide a local diff.'
-            ;;
           --prompt-file)
             grep -q 'original brief' "$2" && grep -q 'How would you like me to proceed?' "$2" &&
               grep -q 'use review.diff' "$2" || exit 8
@@ -3216,10 +3214,17 @@ harnesses:
               echo 'ASK: Which module?'
             fi
             ;;
+          *)
+            case "$1" in *'ASK_INLINE:'*) ;; *) exit 7 ;; esac
+            echo 'warning: rejected a tool call that requires confirmation.' >&2
+            echo 'How would you like me to proceed?'
+            echo '- Provide a local diff.'
+            ;;
         esac
       - devin
     prompt_arg: -p
     prompt_file_flag: --prompt-file
+    prompt_file_args: [-p]
 tasks:
   - {id: swe, harness: devin, in: original brief, args: [--permission-mode, auto]}
   - {id: join, harness: echo, in: compare, depends_on: [swe]}

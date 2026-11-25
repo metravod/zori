@@ -247,7 +247,11 @@ devin:
   prompt_via: arg
   prompt_arg: "-p"                # the flag before the prompt (-p "<prompt>")
   prompt_file_flag: "--prompt-file"
-  extra_args: ["--permission-mode", "accept-edits"]
+  prompt_file_args: ["-p"]        # keep print mode when the prompt goes via file
+  # Headless runs cannot answer approval prompts: under accept-edits every
+  # shell command is rejected. Bypass approves all tools; a read-only
+  # reviewer narrows it with args: ["--permission-mode", "auto"].
+  extra_args: ["--permission-mode", "dangerous"]
   replaceable_flags: ["--permission-mode"]   # a task's args may swap it
   models_cmd: ["sh", "-c", "devin models list --format json | jq -r '.families[].variants[].model_uid'"]
   model_notes:
@@ -257,7 +261,10 @@ devin:
 `command` is the only required field for a new id. With `transcript_chat: true`, the console shows the agent's
 `ASK:` or `ASK_INLINE:` message in a question card. Answer there to continue.
 A follow-up starts the same CLI in the node directory with the saved prompt,
-previous replies and your message. Each turn uses the task's configured model
+previous replies and your message. That prompt goes through `prompt_file_flag`
+when the harness has one, preceded by `prompt_file_args`; a CLI whose print
+mode rides on `prompt_arg` (Devin's `-p`) must list it there, or the follow-up
+opens an interactive session that never replies. Each turn uses the task's configured model
 and tool permissions. A finished node also accepts messages through **Send & steer**.
 Older completed runs can recover the conversation from a matching saved attempt.
 `zori harnesses` lists every resolvable harness with its source

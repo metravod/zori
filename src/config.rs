@@ -245,6 +245,11 @@ pub struct HarnessOverride {
     /// receive the prompt and is rejected at plan time (review F02).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_file_flag: Option<String>,
+    /// When `prompt_via: file`: args emitted just before `prompt_file_flag`,
+    /// e.g. Devin's `-p`. There the print-mode flag doubles as `prompt_arg`, so
+    /// file mode would drop it and Devin would start an interactive session.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prompt_file_args: Vec<String>,
     /// An argv whose stdout is one model id per line — how the console lists
     /// selectable models for a *custom* harness (built-ins have their own
     /// sources; see `crate::models`). Empty means "no listing available".
