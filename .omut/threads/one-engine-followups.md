@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-11-25
+updated: 2026-11-26
 by: devin/opus-5.5
 ---
 # One engine: merge and follow-ups
@@ -28,4 +28,6 @@ project-meta edits made in that clone are lost too.
 - `web/index.html` split — deferred, tied to D14 ([thread](console-ui-redesign.md)).
 - Three rustdoc link warnings on private items (seen on the lost branch).
 
-**Next step:** push `refactor/one-engine` (now F1+F2) so it can never be lost again, redo F4 on it, then merge on the human's approval and close the deferred review items.
+**Merged 2026-11-26:** F1+F2 fast-forwarded into main after a live re-check ([F1](f1-one-engine.md)); not yet released.
+
+**Next step:** release F1+F2, redo F4 on main, close the deferred review items.
