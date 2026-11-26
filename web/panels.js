@@ -215,7 +215,7 @@ function Brief({ n }) {
     <textarea class="inp ta" rows="8" value=${t.in || ''} onInput=${(e) => up({ in: e.target.value })} placeholder="What should this agent do?" />
     <label>Expected output (optional)</label>
     <textarea class="inp ta" rows="2" value=${t.out || ''} onInput=${(e) => up({ out: e.target.value || undefined })} placeholder="e.g. findings only, file:line + fix" />
-    <label class="ck"><input type="checkbox" checked=${!!t.optional} onChange=${() => up({ optional: !t.optional })} /> optional (a failure does not fail the run)</label>
+    <label class="ck sw"><input type="checkbox" checked=${!!t.optional} onChange=${() => up({ optional: !t.optional })} /> optional (a failure does not fail the run)</label>
     <div class="row-in">${n.draft
       ? html`<button class="btn pri" onClick=${() => runDrafts(n.id)}><${Icon} n="play" s=${12} /> Run this node</button>`
       : html`<button class="btn pri" disabled=${!edit} onClick=${() => { rerun(n.id, t); setEdit(null); }}><${Icon} n="refresh" s=${12} /> Rerun with changes</button>

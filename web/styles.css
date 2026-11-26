@@ -108,8 +108,40 @@ select.inp { padding: 0 4px; }
 .foot-hint { padding: 8px 12px; border-top: 1px solid var(--line); color: var(--faint); font-size: 11px; }
 .empty { padding: 18px; color: var(--dim); text-align: center; }
 .empty.big { padding: 60px 20px; line-height: 1.8; }
-.ck { display: inline-flex; align-items: center; gap: 5px; color: var(--dim); white-space: nowrap; cursor: pointer; }
-.ck input { accent-color: var(--blue-d); }
+.ck { display: inline-flex; align-items: center; gap: 6px; color: var(--dim); white-space: nowrap; cursor: pointer; }
+.ck:hover { color: var(--text); }
+/* custom checkbox: native input kept for a11y, painted by theme (matches .btn/.inp metrics) */
+.ck input[type="checkbox"] {
+  appearance: none; -webkit-appearance: none;
+  position: relative; flex: none;
+  width: 14px; height: 14px;
+  border: 1px solid var(--line-2); border-radius: 4px;
+  background: var(--bg);
+  transition: border-color .12s, background .12s, box-shadow .12s;
+}
+/* check glyph = the check icon (icons.js), via mask — colour inherits */
+.ck input[type="checkbox"]::after {
+  content: ""; position: absolute; inset: 0; background: #fff;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12l5 5 9-10'/%3E%3C/svg%3E") center / 10px no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12l5 5 9-10'/%3E%3C/svg%3E") center / 10px no-repeat;
+  opacity: 0; transform: scale(.55);
+  transition: opacity .12s var(--ease), transform .12s var(--ease);
+}
+.ck input[type="checkbox"]:hover { border-color: #3d4856; background: var(--bg-3); }
+.ck input[type="checkbox"]:checked { background: var(--blue-d); border-color: var(--blue-d); }
+.ck input[type="checkbox"]:checked::after { opacity: 1; transform: none; }
+.ck input[type="checkbox"]:focus-visible { outline: none; border-color: var(--blue-d); box-shadow: 0 0 0 2px rgba(31,111,235,.25); } /* same ring as .inp:focus */
+.ck input[type="checkbox"]:disabled { opacity: .45; cursor: default; }
+/* .ck.sw — switch variant for lone mode flags */
+.ck.sw input[type="checkbox"] { width: 26px; height: 15px; border-radius: 8px; background: var(--bg-3); }
+.ck.sw input[type="checkbox"]::before {
+  content: ""; position: absolute; top: 1px; left: 1px; width: 11px; height: 11px;
+  border-radius: 50%; background: var(--dim);
+  transition: transform .15s var(--ease), background .15s;
+}
+.ck.sw input[type="checkbox"]:checked { background: rgba(57,197,207,.15); border-color: var(--cyan); }
+.ck.sw input[type="checkbox"]:checked::before { transform: translateX(11px); background: var(--cyan); }
+.ck.sw input[type="checkbox"]:checked::after { display: none; } /* a switch shows no check glyph */
 .zm { display: inline-flex; align-items: center; gap: 2px; border: 1px solid var(--line-2); border-radius: 6px; padding: 0 2px; }
 
 /* center */
