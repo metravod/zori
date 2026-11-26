@@ -1,40 +1,14 @@
 ---
 status: active
 updated: 2026-11-26
-by: opencode/GLM-5.3
+by: codex/GPT-6
 ---
-# Theme-painted checkboxes (branch `checkbox-theme-restyle`)
+# Theme-painted checkboxes
 
-**Goal:** replace the two remaining native browser checkboxes in the
-console with a theme-consistent control — timeline filters as real
-checkboxes, the node Brief `optional` flag as a switch — without touching
-any JS logic.
+**Goal:** Style the independent timeline filters as checkboxes and the Brief `optional` flag as a switch. Preserve their native checkbox behavior.
 
-**Where we got:** implemented on branch `checkbox-theme-restyle`
-(fb370f4, not pushed), from the plan written by the coddy/qwen3.8 session
-(`zori-runs/new-2dflow-1795707093568/sessions/.../plans/checkbox-theme-restyle.plan.md`):
-- `web/styles.css` — `accent-color` replaced by an `appearance:none`
-  primitive following the `.btn`/`.inp` lifecycle (14px box, `--line-2`
-  border, hover `#3d4856`, checked `--blue-d`, `.inp` focus ring on
-  `:focus-visible`); check glyph is the `check` icon from icons.js drawn
-  via CSS `mask`; `.ck.sw` switch variant (26×15 track, 11px knob, cyan
-  `--cyan` mode accent like `.btn.go`).
-- `web/panels.js:218` — the only JS change: label class `ck` → `ck sw`
-  (kept `ck` so `.brief label:not(.ck)` keeps matching); timeline
-  filters at panels.js:127 untouched.
-- Verified: grep invariants (2 checkboxes, 0 `accent-color`), braces
-  balanced, mask data-URI decodes to the exact icons.js path,
-  `node --test web/*.test.mjs` green (64 cases). No Rust touched.
+**Where we got:** The original change in fb370f4 added the CSS and the `sw` class. Review made the unchecked border and focus outline more visible, retained the native checkbox in forced colors, and let the timeline header and switch label wrap at narrow widths. Cargo manifests are set to 0.3.1.
 
-**Open:** operator review of the branch (requested before push). The
-plan's browser acceptance is still to run at review time: visual pass in
-Chrome/Firefox/Safari (Safari mandatory for `-webkit-appearance`/`mask`),
-keyboard Tab/Space/focus-ring walkthrough on both panels, and 200% zoom.
-Plan B if a browser drops the mask glyph: inline `<svg>` in the label
-shown via `input:checked + svg`. If a light native trace appears after
-`appearance:none`, add `color-scheme: dark` to `:root`.
+**Verified:** Ran the live console on the completed echo flow in Chrome, Firefox, Safari and Playwright WebKit. Checked native names and states, keyboard focus and Space, the timeline filters, and the Brief switch. In Safari at 200% both panels can be open and the controls are visible. Chrome emulation of forced colors selects the native controls. Verified 64 web cases, 219 Rust tests, and Clippy with warnings treated as errors.
 
-**Next step:** review the branch; on approval push/merge, run the
-browser checklist, close this thread. Deliberately out of scope: the
-four native `<select>`s (app.js:146, panels.js:199, 289, 293) — a
-separate task if wanted.
+**Next step:** Publish v0.3.1 through the release workflow and verify the four archives and Homebrew formula.

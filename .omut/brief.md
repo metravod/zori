@@ -3,7 +3,7 @@ status: active
 updated: 2026-11-26
 verified: 2026-11-26
 dreamed: 2026-11-25
-by: devin/opus-5.5
+by: codex/GPT-6
 ---
 ## Why
 Run one task across several CLI coding agents at once so the operator can compare how they handle the same brief without driving several terminals. The design grows from real tasks.
@@ -23,7 +23,7 @@ Release history and the checks behind each feature are in the [log](log.md).
 **Verified 2026-11-26:** F1 (D13) is merged into main: the CLI and console drive `TrackedRun` and share its watchdog, questions and process spawn path; `zori run` retries, nudges and answers `ASK:` on a TTY, unattended with redirected stdin. Live coddy+opencode fan-out/join gave the same result under `zori run` and the console. [F1 verification](threads/f1-one-engine.md)
 **2026-11-26:** F2 is merged too: `src/runner/` (10 modules) and `src/ui/` (9 modules) split off their former 4931/3034-line files as a verified pure move. [review](threads/code-review-2026-11-24.md)
 **2026-11-26:** The embedded console now uses the live run API for its canvas, comparison, inbox and timeline. [Guide](../docs/guide.md)
-**2026-11-26:** The two native checkboxes are theme-painted on branch `checkbox-theme-restyle` (not pushed, review pending) — filters as boxes, `optional` as a cyan switch. [Thread](threads/checkbox-theme-restyle.md)
+**2026-11-26:** The timeline filters and Brief `optional` switch passed browser review for v0.3.1. [Verification](threads/checkbox-theme-restyle.md)
 **Verified 2026-11-25:** v0.2.4 released (OpenCode `--auto`; v0.2.3 brought codex `danger-full-access`): [release run](https://github.com/metravod/zori/actions/runs/45686074730) green on all four targets, all archives match SHA256SUMS, the macOS arm64 archive reports `zori 0.2.4`; after the [tap update](https://github.com/metravod/homebrew-tap/actions/runs/45687587060) `brew upgrade` installed 0.2.4. Earlier releases passed the same bar.
 **Verified 2026-11-22:** harnesses resolve built-in → `~/.zori/harnesses.yml` → a flow's `harnesses:` block everywhere (CLI listings, console picker, Fleet, planner brief); the ⚓ Fleet stores harness/model pairs in `~/.zori/fleet.json`; workflow skills live in `~/.zori/skills/` (D10, D11). See the [guide](../docs/guide.md#adding-a-harness-the-personal-store).
 **Verified 2026-11-22:** planner chats run in the chosen project folder and proposals merge onto a live canvas (layered tests, no live browser session). See [combined verification](threads/planner-canvas-verification.md).
