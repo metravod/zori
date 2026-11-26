@@ -23,7 +23,7 @@ by: coddy/qwen3.8-flash-next-ru
 **Verified:** Only the audit above; no UI code changed.
 **Not verified:** Whether the run/state API already exposes timings, token counts and last activity per attempt for items 1 and 3.
 **Open:** D14 (front-end foundation) gates items 1–5. The owner is trying an external UI generator on a mock-up prompt first.
-**Next step:** Decide D14, then build a compare-view mock-up against a real fan-out run (e.g. `omut-review`).
+**Next step:** see the 2026-11-26 prototype v2 section below.
 
 ## 2026-11-26: layout mockup (branch `feature/console-ui-mockup`, from main)
 
@@ -47,3 +47,32 @@ view) and item 3 (live cards) land on that skeleton. If a framework wins, the
 mockup still fixes the layout contract; the data.js shapes transfer as-is.
 **Still open:** whether run/state exposes per-attempt timings, cost/tokens and
 last activity (the mockup assumes it does).
+
+## 2026-11-26: interactive prototype v2 (devin/opus-5.5)
+
+The owner rejected the first mock-up's look and asked for an IDE (PyCharm)
+style layout that keeps the Image-2 cards: tool-window buttons on the edges
+open panels — left Runs / Pipelines / Fleet (harness × model) / Artifacts,
+bottom Timeline / Logs, right Node (inspector + node chat) / Planner
+(supermodel chat) / Attention inbox. Plus an interactive canvas: drag a
+harness·model from Fleet and it materialises into a node (quick animation),
+wires are pulled card-to-card on the canvas instead of edited in config.
+
+`ui-mockup/` was rewritten on that brief (Preact + htm vendored, D14 accepted):
+drop-to-node with auto-wire to a nearby upstream, wire by dragging a card's
+output (cycle/duplicate refused), quick-add picker on double-click or on a
+wire released in empty space, ⌘K palette, undo, Compare overlay, planner
+proposal → "Apply to canvas", inbox answer/approve/retry-on-other-model,
+steer box, Gantt of attempts with watchdog nudges.
+
+**Verified:** headless Chrome via CDP at 1440×900: no console errors; Fleet
+drop creates a draft, a drop right of `tool-design` auto-wires to it, a pulled
+wire `evidence → devin` is added, planner proposal adds two wired drafts, an
+inbox answer clears the question (title badge drops), "Run N new" starts them.
+**Not verified:** a human clicking it; real API wiring; small screens.
+**Open:** D12 says "no add-node" on a live run, while the prototype adds and
+launches drafts inside the running run. Either the canvas adds nodes only
+while composing a flow (and "Run" boots a new run), or D12 is amended. Waits
+for the human.
+**Next step:** owner reviews the prototype; then port it to `web/` against
+`/api/runs/:id` + SSE, adding the EXTRA fields in `data.js` to `TaskNode`.

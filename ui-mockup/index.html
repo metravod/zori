@@ -1,90 +1,13 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>zori console · mockup</title>
-<link rel="stylesheet" href="styles.css">
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>zori</title>
+  <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <header id="topbar">
-    <span class="logo">ZORI</span>
-    <nav id="nav">
-      <a class="nav-item active" href="#">Runs</a>
-      <a class="nav-item" href="#">Pipelines</a>
-      <a class="nav-item" href="#">Agents</a>
-      <a class="nav-item" href="#">Models</a>
-      <a class="nav-item" href="#">Artifacts</a>
-      <a class="nav-item" href="#">Settings</a>
-    </nav>
-    <div class="topbar-right">
-      <span class="kbd-hint">⌘K</span>
-      <span class="daemon" title="built-in daemon">⚓ daemon :7070</span>
-    </div>
-  </header>
-
-  <div id="shell">
-    <aside id="sidebar">
-      <button id="new-run" class="btn btn-primary block">＋ New run</button>
-      <div class="side-section">
-        <h3 class="side-title">Run history</h3>
-        <ul id="run-list"></ul>
-      </div>
-      <div class="side-section">
-        <h3 class="side-title">Saved pipelines</h3>
-        <ul id="pipeline-list"></ul>
-      </div>
-    </aside>
-
-    <main id="center">
-      <div id="run-header"></div>
-      <section id="dag-panel" class="panel">
-        <div class="panel-head">
-          <div class="tabs">
-            <button class="tab active">DAG</button>
-            <button class="tab">Logs</button>
-            <button class="tab">Artifacts <span class="count">4</span></button>
-          </div>
-          <span id="dag-meta" class="muted"></span>
-        </div>
-        <div id="dag"></div>
-      </section>
-
-      <section id="agents-panel" class="panel">
-        <div class="panel-head">
-          <h3 class="panel-title">Agents</h3>
-          <span class="muted">click a card to inspect</span>
-        </div>
-        <div id="agent-cards"></div>
-      </section>
-
-      <section id="timeline-panel" class="panel">
-        <div class="panel-head">
-          <h3 class="panel-title">Timeline</h3>
-          <label class="chk"><input type="checkbox" id="opt-attempts" checked> Attempts</label>
-          <label class="chk"><input type="checkbox" id="opt-nudges" checked> Watchdog nudges</label>
-          <label class="chk"><input type="checkbox" id="opt-costs"> Costs</label>
-        </div>
-        <div id="timeline"></div>
-      </section>
-    </main>
-
-    <aside id="right">
-      <div id="inbox-view">
-        <div class="panel-head">
-          <h3 class="panel-title">Attention inbox <span id="inbox-count" class="badge badge-urgent">3</span></h3>
-        </div>
-        <div id="inbox"></div>
-        <div class="panel-head">
-          <h3 class="panel-title">Final report</h3>
-          <span class="muted">report · codex</span>
-        </div>
-        <div id="final-report"></div>
-      </div>
-      <div id="agent-view" hidden></div>
-    </aside>
-  </div>
-
+  <div id="app"></div>
   <script type="module" src="app.js"></script>
 </body>
 </html>
