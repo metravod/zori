@@ -15,6 +15,8 @@ by the human's call. Each finding taken into work gets its own thread.
 lost unmerged the same day ([follow-ups](one-engine-followups.md)); the
 "done" below describes the lost work, not main:
 
+**Current F1:** redone on local branch `refactor/one-engine` based on ba7ef62. The [F1 thread](f1-one-engine.md) records current verification.
+
 - **F1 — done** (67d351d, review fixes 7013642). `zori run` and the console
   drive `TrackedRun::run_all`; `runner::run`, `run_task` and `spawn_captured`
   duplicates are gone. Terminal printer, TTY prompts, unattended mode when
@@ -54,7 +56,7 @@ this record rests on the stage reports.
 `SharedBuf`); the run registry already recovers from poisoning
 (`runs_guard`, ui.rs:450). Earlier "~270 unwraps" counted tests — wrong.
 
-**Open:** the branch is unmerged, see [follow-ups](one-engine-followups.md);
-`web/index.html` split deferred to D14.
+**Open:** current F1 is unmerged. F2, F3 and F4 remain for later stages.
+The `web/index.html` split is deferred to D14.
 
-**Next step:** redo F1/F2/F4 by rerunning the flow (see follow-ups), then merge to main.
+**Next step:** continue with the F2 file split from the F1 branch.

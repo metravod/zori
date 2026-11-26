@@ -2,7 +2,7 @@
 
 ## Run artifacts
 
-Every run — classic `zori run` and `zori ui` alike — writes a tree under the
+Every run — `zori run` and `zori ui` alike — writes a tree under the
 runs root (`zori-runs/`, override: `ZORI_RUNS_ROOT` for `run`, `--runs-root`
 for `ui`):
 
@@ -11,7 +11,7 @@ zori-runs/<flow>-<unix-millis>/
   manifest.json                provenance index: inputs, levels, per-attempt
                                status/timings/checksums (atomic rewrites)
   state.json                   the ui server's live state (zori ui runs)
-  sessions/                    coddy session storage for this run (ui runs)
+  sessions/                    coddy session storage for this run
   tasks/<task>/work/           the task's isolated working directory
   tasks/<task>/<attempt>/      one attempt: r0 = first run, later IDs = follow-up attempts
     prompt.txt  out.txt  err.txt  meta.json
@@ -59,16 +59,19 @@ The console persists run state on disk and reloads it after a restart. Use the r
 
 ### The watchdog: nudges, retries, and questions to you
 
-The console supervises first
-runs, reruns and their automatic follow-ups. A manual chat steer runs once. Classic `zori run` executes each task once.
+One engine drives both front ends: the console and `zori run` supervise
+first runs, reruns and their automatic follow-ups the same way. A manual
+chat steer runs once. In the terminal, a blocking question prints `ASK:`
+and waits for your answer on stdin; with stdin redirected (or at EOF) the
+run continues unattended and auto-answers.
 
-- At an agent's deadline the console checks the last ten minutes for fresh
+- At an agent's deadline zori checks the last ten minutes for fresh
   stdout bytes (including a partial line) or a new transcript write from the
   current Coddy session. With evidence of activity, the same attempt gets ten
   more minutes and the node transcript records the reason. Each extension
   requires fresh evidence. Silence, stderr diagnostics and Zori heartbeats
   alone leave the deadline in force. Set `watchdog: {extend_on_progress: false}`
-  on the flow or a task for a hard timeout. Batch `zori run` keeps its hard timeout.
+  on the flow or a task for a hard timeout.
 - **An unfinished reply** (the `<response clipped` marker, empty assistant text,
   or an entire reply consisting of placeholders such as "Continuing…") is **nudged**: the *same* session is resumed with a message that
   orders the model to stop working and produce the final answer now — a naive
@@ -95,7 +98,9 @@ runs, reruns and their automatic follow-ups. A manual chat steer runs once. Clas
   retried. The manifest records the reason alongside the actual exit code.
   Failed Codex/OpenCode attempts also retain the captured event stream in `stdout.log`.
 - **Blocking questions** use a standalone `ASK: Which branch?` line. The agent
-  ends its turn and the node waits for the operator.
+  ends its turn and the node waits for the operator: in the console through
+  the node chat or the run's **Questions** menu, in `zori run` through a
+  terminal prompt.
 - **Inline questions** use `ASK_INLINE:`. The console displays them as soon as
   the CLI emits the assistant message. The agent can finish independent work
   during this turn. Either prefix accepts plain text or a single-line payload

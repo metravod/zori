@@ -8,7 +8,7 @@
 //! - `connectors`: coddy / codex / zcode built-ins plus user overrides; models
 //!   selected per run where the CLI supports it (D1: zcode has no `--model`).
 //! - `artifacts`: the single owner of the on-disk run layout — per-task
-//!   attempt dirs, the manifest, checksums — shared by both drivers.
+//!   attempt dirs, the manifest, checksums.
 //! - `runner`: our own driver, spawning a child per task, level by level.
 //! - `watchdog`: the supervisor — verdicts over finished attempts (nudge /
 //!   retry / park-a-question) and the ask-protocol preamble.
@@ -28,4 +28,3 @@ pub mod ui;
 pub mod watchdog;
 
 pub use config::{Flow, Task};
-pub use runner::{RunReport, Status};

@@ -17,7 +17,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::time::{Duration, Instant};
@@ -31,16 +31,14 @@ use crate::artifacts::{self, AttemptMeta, AttemptRecord, ManifestStore, OutFile,
 use crate::config::{Flow, PromptVia, Task, Workspace};
 use crate::connectors::{self, Connector};
 use crate::dag::{build_plan, ExecutionPlan};
-use crate::state::{Emitter, FlowProposal, ProposalStatus, Role, SessionRef, TaskStatus};
+use crate::state::{Emitter, FlowProposal, ProposalStatus, Role, RunEvent, SessionRef, TaskStatus};
 use crate::watchdog::activity::{Activity, ObservedOutput, EXTENSION};
 use crate::watchdog::{Attempt, Settings, Verdict};
 
 /// Default per-task timeout when neither the flow nor the task sets one.
 const DEFAULT_TIMEOUT_SECS: u64 = 1800;
 
-/// The flow-level timeout, falling back to [`DEFAULT_TIMEOUT_SECS`] when the
-/// flow omits `default_timeout_secs`. Single home for the flow default so the
-/// classic and tracked drivers cannot drift on what "no flow timeout" means.
+/// The flow-level timeout, falling back to [`DEFAULT_TIMEOUT_SECS`].
 fn flow_default_timeout(flow: &Flow) -> u64 {
     flow.default_timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS)
 }
@@ -161,70 +159,6 @@ fn die(sig: &str) -> ! {
     std::process::exit(if sig == "SIGTERM" { 143 } else { 130 });
 }
 
-/// Result of one executed task.
-#[derive(Debug, Clone)]
-pub struct TaskResult {
-    pub id: String,
-    pub status: Status,
-    /// Captured stdout (the value referenced by `${steps.<id>.output}`).
-    pub output: String,
-    /// Captured stderr, kept for diagnostics and shown on failure.
-    pub stderr: String,
-    pub exit_code: Option<i32>,
-    /// Mirrors `Task::optional`. A failed OPTIONAL branch neither blocks
-    /// downstream nor fails the flow: its `${steps.<id>.output}` feeds a
-    /// "did not complete" placeholder instead. See D3.
-    pub optional: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Status {
-    Done,
-    Failed,
-    Skipped,
-}
-
-impl Status {
-    pub fn label(&self) -> &'static str {
-        match self {
-            Status::Done => "done",
-            Status::Failed => "failed",
-            Status::Skipped => "skipped",
-        }
-    }
-}
-
-/// Outcome of a whole flow run.
-pub struct RunReport {
-    pub results: HashMap<String, TaskResult>,
-    pub out_dir: Option<PathBuf>,
-}
-
-impl RunReport {
-    pub fn succeeded(&self) -> usize {
-        self.results.values().filter(|r| r.status == Status::Done).count()
-    }
-    /// Hard failures: tasks that must complete and didn't. Drives the exit
-    /// code. Best-effort (optional) branches are excluded — see `degraded`.
-    pub fn failed(&self) -> usize {
-        self.results
-            .values()
-            .filter(|r| r.status == Status::Failed && !r.optional)
-            .count()
-    }
-    /// Best-effort (`optional: true`) branches that failed. They neither block
-    /// downstream nor fail the flow; count them so they don't go silent.
-    pub fn degraded(&self) -> usize {
-        self.results
-            .values()
-            .filter(|r| r.status == Status::Failed && r.optional)
-            .count()
-    }
-    pub fn skipped(&self) -> usize {
-        self.results.values().filter(|r| r.status == Status::Skipped).count()
-    }
-}
-
 /// Build the execution plan for a flow, surfacing DAG errors as `anyhow`.
 pub fn plan(flow: &Flow) -> Result<ExecutionPlan> {
     let pairs: Vec<(String, Vec<String>)> = flow
@@ -243,6 +177,7 @@ pub fn dry_run(
     flow: &Flow,
     plan: &ExecutionPlan,
     extra_inputs: &[(String, String)],
+    unattended: bool,
 ) -> Result<()> {
     println!("flow '{}' — {} task(s) in {} level(s)", flow.name, plan.step_count(), plan.levels.len());
     for (li, level) in plan.levels.iter().enumerate() {
@@ -259,11 +194,22 @@ pub fn dry_run(
             // argv is honest: path refs interpolate instead of erroring, and
             // a workspace:task codex task shows its real `-C`.
             let (ctx, flag_cwd) = dry_preview(flow, task);
-            let preamble = crate::watchdog::preamble_for_classic(flow, task)
-                .filter(|_| crate::watchdog::preamble_applies(&conn));
+            let preamble = crate::watchdog::preamble_applies(&conn)
+                .then(|| crate::watchdog::preamble(&supervision_settings(flow, task, unattended)))
+                .flatten();
             let skills = skill_block(flow, task)?;
             let prompt = render_prompt(task, &inputs, &outputs, &ctx, preamble.as_deref(), skills.as_deref())?;
+            if matches!(conn.id.as_str(), "echo" | "prompt") {
+                println!("  [{id}] {}  (harness={}, no process)", render_argv(std::slice::from_ref(&prompt)), conn.id);
+                outputs.insert(id.clone(), format!("<output of {id}>"));
+                continue;
+            }
             let mut sp = connectors::plan(&conn, task, &prompt, flag_cwd.as_deref())?;
+            if !conn.transcript_chat || conn.id == "coddy" {
+                let sessions = ctx.run_dir.as_ref().expect("preview run dir").join("sessions");
+                let track = connectors::track_args(&conn, "<session-id>", &sessions);
+                connectors::insert_track_args(&mut sp.argv, track);
+            }
             if let Some(f) = &sp.file_prompt {
                 let _ = f;
                 for tok in sp.argv.iter_mut() {
@@ -288,6 +234,12 @@ pub fn dry_run(
         }
     }
     Ok(())
+}
+
+fn supervision_settings(flow: &Flow, task: &Task, unattended: bool) -> Settings {
+    let mut settings = Settings::for_task(flow, task);
+    settings.unattended |= unattended && settings.ask;
+    settings
 }
 
 /// Render an argv for display and diagnostics — **not** a byte-exact command
@@ -346,23 +298,6 @@ pub struct RunArtifacts {
 }
 
 impl RunArtifacts {
-    /// A fresh run tree + manifest (classic `zori run`).
-    fn create(
-        runs_root: &Path,
-        flow: &Flow,
-        plan: &ExecutionPlan,
-        inputs: &HashMap<String, String>,
-    ) -> Result<Self> {
-        let run_id = artifacts::new_run_id(&flow.name);
-        let dirs = RunDirs::create(runs_root, &run_id)?;
-        // M9: create() may have claimed a suffixed name; the manifest must
-        // carry the id the folder actually landed on.
-        let run_id = dirs.run_id();
-        let manifest = Self::init_manifest(&dirs, &run_id, flow, plan, inputs)?;
-        let project_dir = project_dir_of(flow);
-        Ok(RunArtifacts { dirs, manifest, project_dir })
-    }
-
     /// Adopt an existing run directory (the tracked engine, incl. reloads):
     /// the manifest is loaded when present, initialised when the run predates
     /// manifests — old flat artifacts stay untouched on disk.
@@ -373,10 +308,7 @@ impl RunArtifacts {
         inputs: &HashMap<String, String>,
     ) -> Result<Self> {
         let dirs = RunDirs::open(out_dir.to_path_buf());
-        let run_id = out_dir
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
+        let run_id = dirs.run_id();
         let manifest = Self::init_manifest(&dirs, &run_id, flow, plan, inputs)?;
         let project_dir = project_dir_of(flow);
         Ok(RunArtifacts { dirs, manifest, project_dir })
@@ -501,154 +433,6 @@ fn env_keys(conn: &Connector, task: &Task) -> Vec<String> {
         }
     }
     keys
-}
-
-/// Execute the flow. `extra_inputs` (from `--input k=v`) override flow inputs;
-/// `runs_root` is where the run tree is created (`artifacts::runs_root()`).
-pub async fn run(
-    flow: &Flow,
-    plan: &ExecutionPlan,
-    extra_inputs: &[(String, String)],
-    runs_root: &Path,
-) -> Result<RunReport> {
-    // Ctrl-C/SIGTERM to zori must take the agent CLIs down with it, not leave
-    // them orphaned (one ran 12 minutes past a dead parent on the first real
-    // run). Idempotent, so calling it from every run() entry is safe.
-    install_death_handlers();
-
-    let inputs = resolved_inputs(flow, extra_inputs);
-    let art = RunArtifacts::create(runs_root, flow, plan, &inputs)?;
-    let out_dir = Some(art.dirs.root().to_path_buf());
-    let default_timeout = flow_default_timeout(flow);
-
-    let mut outputs: HashMap<String, String> = HashMap::new();
-    let mut results: HashMap<String, TaskResult> = HashMap::new();
-
-    for (li, level) in plan.levels.iter().enumerate() {
-        println!("── level {li}: {}", level.join(", "));
-        // Partition this level into runnable vs skipped-because-a-dep-died.
-        let mut runnable: Vec<&Task> = Vec::new();
-        for id in level {
-            let task = flow.tasks.iter().find(|t| &t.id == id).unwrap();
-            // A dependency blocks this task unless it completed, or it is a
-            // best-effort (`optional: true`) branch that fell over — optional
-            // producers never block a join (see Task::optional, D3). A missing
-            // dep is treated as blocking; build_plan guarantees deps exist.
-            let blocked = task.depends_on.iter().any(|d| {
-                !results
-                    .get(d)
-                    .is_some_and(|r| r.status == Status::Done || r.optional)
-            });
-            if blocked {
-                println!("  [{}] skipped (a dependency did not complete)", id);
-                // Review (minor): record the skip in the manifest naming its
-                // blockers — `AttemptRecord.error` promised this but skips
-                // were never written, so a cascaded task looked like it never
-                // existed. (Mirror of the tracked driver's skip recording.)
-                let blockers: Vec<String> = task
-                    .depends_on
-                    .iter()
-                    .filter(|d| {
-                        !results
-                            .get(d.as_str())
-                            .is_some_and(|r| r.status == Status::Done || r.optional)
-                    })
-                    .cloned()
-                    .collect();
-                art.manifest.record_attempt(
-                    id,
-                    &task.harness,
-                    task.model.clone(),
-                    task.optional,
-                    "skipped",
-                    AttemptRecord {
-                        status: Status::Skipped.label().to_string(),
-                        error: Some(format!(
-                            "skipped: unfinished dependencies: {}",
-                            blockers.join(", ")
-                        )),
-                        exit_code: None,
-                        started_at: None,
-                        ended_at: Some(now_secs()),
-                        cwd: None,
-                        session: None,
-                        out: None,
-                    },
-                );
-                results.insert(
-                    id.clone(),
-                    TaskResult { id: id.clone(), status: Status::Skipped, output: String::new(), stderr: String::new(), exit_code: None, optional: task.optional },
-                );
-                // A skipped best-effort branch must still not break a
-                // downstream join's `${steps.<id>.output}`.
-                if task.optional {
-                    outputs.insert(id.clone(), missing_output(id));
-                }
-            } else {
-                runnable.push(task);
-            }
-        }
-        if runnable.is_empty() {
-            continue;
-        }
-
-        let permits = Arc::new(Semaphore::new(
-            flow.max_parallel.unwrap_or(runnable.len()).max(1),
-        ));
-        let mut handles = Vec::new();
-        for task in runnable {
-            let permits = Arc::clone(&permits);
-            let inputs = inputs.clone();
-            let outputs = outputs.clone();
-            let art = art.clone();
-            let flow_cwd = flow.cwd.clone();
-            let flow = flow.clone();
-            let task = task.clone();
-            // Review (minor): keep the id and the optional flag beside the
-            // handle. A panicked task never returns its tuple, so the id must
-            // be known before the spawn for the JoinError branch below.
-            let (id, optional) = (task.id.clone(), task.optional);
-            handles.push((id, optional, tokio::spawn(async move {
-                let _permit = permits.acquire_owned().await.expect("semaphore closed");
-                run_task(&flow, &task, &flow_cwd, default_timeout, &inputs, &outputs, Some(&art)).await
-            })));
-        }
-
-        // Level barrier: await the whole level before starting the next. A
-        // panicked task (JoinError) becomes a Failed result for its id and the
-        // barrier keeps waiting for the siblings — the old `.context(..)?`
-        // bailed on the FIRST panic, leaving the rest of the level detached
-        // (orphaned agents) and skipping their `Failed` bookkeeping.
-        for (id, optional, h) in handles {
-            let result = match h.await {
-                Ok(res) => match res {
-                    Ok(r) => r,
-                    Err(e) => {
-                        println!("  [{id}] failed: {e:#}");
-                        TaskResult { id: id.clone(), status: Status::Failed, output: String::new(), stderr: format!("{e:#}"), exit_code: None, optional }
-                    }
-                },
-                Err(join_err) => {
-                    // Review (minor): the task future panicked. Record it as a
-                    // failed result (so the DAG and the report tell the truth)
-                    // rather than aborting the whole run().
-                    println!("  [{id}] panicked: {join_err}");
-                    TaskResult { id: id.clone(), status: Status::Failed, output: String::new(), stderr: format!("task panicked: {join_err}"), exit_code: None, optional }
-                }
-            };
-            println!("  [{id}] {} {}", result.status.label(), first_line(&result.output));
-            if result.status == Status::Done {
-                outputs.insert(id.clone(), result.output.clone());
-            } else if optional {
-                // Best-effort branch that fell: downstream still runs and sees
-                // an honest gap, not a hard `${steps.<id>.output}` error.
-                outputs.insert(id.clone(), missing_output(&id));
-            }
-            results.insert(id, result);
-        }
-    }
-
-    Ok(RunReport { results, out_dir })
 }
 
 /// Merge flow inputs with CLI overrides (CLI wins).
@@ -855,370 +639,7 @@ fn missing_output(id: &str) -> String {
     )
 }
 
-/// Spawn one task's harness and capture output. When `art` is present the
-/// task gets its own subtree (`tasks/<id>/work` + the `r0` attempt dir) and
-/// its prompt/argv/output land in it as provenance.
-#[allow(clippy::too_many_arguments)]
-async fn run_task(
-    flow: &Flow,
-    task: &Task,
-    flow_cwd: &Option<PathBuf>,
-    default_timeout: u64,
-    inputs: &HashMap<String, String>,
-    outputs: &HashMap<String, String>,
-    art: Option<&RunArtifacts>,
-) -> Result<TaskResult> {
-    let conn = connector_for(flow, task)?;
-    let started_at = now_secs();
-
-    // The task's subtree and (by default) its isolated work dir.
-    let task_dir = match art {
-        Some(a) => Some(a.dirs.ensure_task(&task.id)?),
-        None => None,
-    };
-    let work_dir = art.map(|a| a.dirs.work_dir(&task.id));
-    let ctx = PromptCtx {
-        run_dir: art.map(|a| a.dirs.root().to_path_buf()),
-        task_dir: task_dir.clone(),
-        work_dir: work_dir.clone(),
-        project_dir: art.and_then(|a| a.project_dir.clone()),
-    };
-    let preamble = crate::watchdog::preamble_for_classic(flow, task)
-        .filter(|_| crate::watchdog::preamble_applies(&conn));
-    let skills = skill_block(flow, task)?;
-    let prompt = render_prompt(task, inputs, outputs, &ctx, preamble.as_deref(), skills.as_deref())?;
-    let (cwd, flag_cwd) = effective_cwd(flow_cwd, task, work_dir.as_deref())?;
-    let mut sp = connectors::plan(&conn, task, &prompt, flag_cwd.as_deref())?;
-
-    let timeout = timeout_for(task, default_timeout);
-
-    // The first-run attempt dir; the fully rendered prompt is kept in it as
-    // provenance forever (and doubles as the PromptVia::File carrier, which is
-    // why it is no longer a deleted temp file).
-    let attempt_dir = match art {
-        Some(a) => Some(a.dirs.ensure_attempt(&task.id, "r0")?),
-        None => None,
-    };
-    if let Some(dir) = &attempt_dir {
-        let _ = tokio::fs::write(dir.join("prompt.txt"), &prompt).await;
-    }
-
-    // The `prompt` harness is the flow's starting block: there is no CLI to
-    // run — the rendered prompt IS the node's output, recorded like any
-    // attempt so dependents (and the manifest) see it identically.
-    if conn.id == "prompt" {
-        let ended_at = now_secs();
-        if let (Some(a), Some(adir)) = (art, &attempt_dir) {
-            let _ = tokio::fs::write(adir.join("out.txt"), &prompt).await;
-            let _ = tokio::fs::write(adir.join("err.txt"), "").await;
-            let _ = artifacts::write_meta(
-                adir,
-                &AttemptMeta {
-                    harness: conn.id.clone(),
-                    model: task.model.clone(),
-                    argv: vec![],
-                    env_keys: env_keys(&conn, task),
-                    status: Status::Done.label().to_string(),
-                    exit_code: Some(0),
-                    started_at: Some(started_at),
-                    ended_at: Some(ended_at),
-                    cwd: Some(cwd.clone()),
-                    prompt_sha256: artifacts::sha256_hex(prompt.as_bytes()),
-                },
-            );
-            a.manifest.record_attempt(
-                &task.id,
-                &conn.id,
-                task.model.clone(),
-                task.optional,
-                "r0",
-                AttemptRecord {
-                    status: Status::Done.label().to_string(),
-                    error: None, // scripted: only ever Done
-                    exit_code: Some(0),
-                    started_at: Some(started_at),
-                    ended_at: Some(ended_at),
-                    cwd: Some(cwd.clone()),
-                    session: None,
-                    out: Some(OutFile {
-                        path: a.dirs.relative(&adir.join("out.txt")),
-                        sha256: artifacts::sha256_hex(prompt.as_bytes()),
-                        bytes: prompt.len(),
-                    }),
-                },
-            );
-        }
-        return Ok(TaskResult {
-            id: task.id.clone(),
-            status: Status::Done,
-            output: prompt.clone(),
-            stderr: String::new(),
-            exit_code: Some(0),
-            optional: task.optional,
-        });
-    }
-
-    if sp.file_prompt.is_some() {
-        let path = match &attempt_dir {
-            Some(dir) => dir.join("prompt.txt"),
-            None => {
-                let t = std::env::temp_dir().join(format!(
-                    "{}.prompt.txt",
-                    artifacts::sanitize_component(&task.id)
-                ));
-                std::fs::create_dir_all(std::env::temp_dir()).ok();
-                t
-            }
-        };
-        if attempt_dir.is_none() {
-            tokio::fs::write(&path, &prompt).await.with_context(|| "writing prompt file")?;
-        }
-        // Same rule as the tracked engine: argv paths resolve against the
-        // child's cwd, so hand it an absolute prompt-file path.
-        let path = artifacts::absolute(&path);
-        for tok in sp.argv.iter_mut() {
-            if tok == "__ZORI_PROMPT_FILE__" {
-                *tok = path.display().to_string();
-            }
-        }
-    }
-
-    let mut cmd = Command::new(&sp.program);
-    cmd.args(&sp.argv[1..]); // argv[0] is program
-    cmd.current_dir(&cwd);
-    // ZORI_* context first, so a connector/task env can still override it.
-    if let (Some(a), Some(tdir)) = (art, &task_dir) {
-        for (k, v) in artifacts::task_env(
-            a.dirs.root(),
-            tdir,
-            &work_dir.clone().unwrap_or_else(|| tdir.join("work")),
-            a.project_dir.as_deref(),
-        ) {
-            cmd.env(k, v);
-        }
-    }
-    for (k, v) in &conn.env {
-        cmd.env(k, v);
-    }
-    for (k, v) in &task.env {
-        cmd.env(k, v);
-    }
-    cmd.stdin(Stdio::piped());
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
-    cmd.kill_on_drop(true);
-    // Put the child in its own process group so a timeout or a Ctrl-C reaches
-    // the whole tree (the agent CLIs fork their own tool subprocesses). With
-    // pgid == child pid, killpg(child_pid) covers everyone below it.
-    #[cfg(unix)]
-    cmd.process_group(0);
-
-    let mut child = cmd
-        .spawn()
-        .with_context(|| format!("spawning '{}': {}", sp.program, render_argv(&sp.argv)))?;
-    // Capture the pid now: after we hand `child` to `wait()` below it is
-    // borrowed and we can no longer call id() on it.
-    let group = GroupRegistration::register(child.id());
-
-    // Spawn the readers before feeding stdin: if the child writes a lot to
-    // stdout while we block writing a big prompt to its stdin, the pipes
-    // deadlock. Draining stdout/stderr first removes that ordering hazard.
-    let stdout = child.stdout.take().ok_or_else(|| anyhow!("no stdout handle"))?;
-    let stderr = child.stderr.take().ok_or_else(|| anyhow!("no stderr handle"))?;
-
-    // Readers append to shared buffers so a timeout (where we kill the child
-    // and may abort the reader) still keeps whatever it had already read.
-    let out_buf = SharedBuf::default();
-    let err_buf = SharedBuf::default();
-    let mut stdout_task = tokio::spawn(read_stream(stdout, out_buf.clone()));
-    let mut stderr_task = tokio::spawn(read_stream(stderr, err_buf.clone()));
-
-    // The clock starts BEFORE stdin is fed: a child that never reads a big
-    // stdin used to sit outside the deadline forever, because the unbounded
-    // write_all below gated everything after it (review F01).
-    let start = Instant::now();
-    let deadline = tokio::time::Instant::now() + timeout;
-    let mut timed_out = false;
-
-    // Feed stdin, raced against the same deadline so a wedged writer cannot
-    // extend the budget.
-    {
-        let mut si = child.stdin.take().ok_or_else(|| anyhow!("no stdin handle"))?;
-        match conn.prompt_via {
-            PromptVia::Stdin => {
-                let text = sp.stdin_prompt.as_deref().unwrap_or("");
-                tokio::select! {
-                    biased;
-                    r = si.write_all(text.as_bytes()) => {
-                        // Broken pipe is the normal case: the child exited
-                        // (or ignores stdin) before draining it. Anything
-                        // else deserves a diagnostic line.
-                        if let Err(e) = r {
-                            if e.kind() != std::io::ErrorKind::BrokenPipe {
-                                eprintln!("  [{}] stdin write error: {e}", task.id);
-                            }
-                        }
-                    }
-                    _ = tokio::time::sleep_until(deadline) => {
-                        // The child never drained the prompt within budget.
-                        // Kill the group via the timeout path below; a
-                        // partial prompt plus exit-0 must not read as Done.
-                        eprintln!(
-                            "  [{}] TIMED OUT feeding stdin ({}s)",
-                            task.id,
-                            timeout.as_secs()
-                        );
-                        timed_out = true;
-                    }
-                }
-            }
-            // Arg/File: send nothing but close stdin so the child doesn't wait.
-            PromptVia::Arg | PromptVia::File => {}
-        }
-        // Dropping si closes stdin (also unwedges a timed-out writer).
-    }
-
-    // Await child exit with a deadline and a heartbeat. The previous version
-    // awaited the reader tasks before inspecting the timeout — so on a hung
-    // child the readers never returned and the timeout never fired. Here the
-    // only thing we wait on is `child.wait()`, racing a deadline and a ticker.
-    // If stdin feeding already consumed the budget, `timed_out` is set and the
-    // sleep_until below is already expired, so we fall straight into the kill.
-    let wait = child.wait();
-    tokio::pin!(wait);
-    let mut ticker = tokio::time::interval(Duration::from_secs(HEARTBEAT_SECS));
-    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    ticker.tick().await; // consume the interval's immediate first tick
-
-    let mut exit_res: Option<std::io::Result<std::process::ExitStatus>> = None;
-    loop {
-        tokio::select! {
-            biased;
-            r = &mut wait => { exit_res = Some(r); break; }
-            _ = tokio::time::sleep_until(deadline) => { timed_out = true; break; }
-            _ = ticker.tick() => {
-                println!(
-                    "  [{}] … running {}s, {} bytes out so far",
-                    task.id,
-                    start.elapsed().as_secs(),
-                    out_buf.bytes(),
-                );
-            }
-        }
-    }
-
-    // On timeout, kill the whole group FIRST, then let the readers finish —
-    // killing closes the pipes so they unblock. Awaiting them before the kill
-    // was the deadlock that made the first real run hang forever.
-    if timed_out {
-        eprintln!("  [{}] TIMED OUT after {}s — killing group", task.id, timeout.as_secs());
-        group.kill_group().await;
-        // Reap the killed child so it doesn't linger as a zombie; the kill
-        // closed its run so this returns promptly with the signal status.
-        let _ = tokio::time::timeout(Duration::from_secs(10), &mut wait).await;
-    }
-
-    // Give readers a bounded grace to flush whatever the killed child left in
-    // the pipes, then snapshot. Aborting after the (possibly expired) grace
-    // guarantees we never block on a reader that won't finish.
-    let _ = tokio::time::timeout(Duration::from_secs(10), async {
-        let _ = (&mut stdout_task).await;
-        let _ = (&mut stderr_task).await;
-    })
-    .await;
-    stdout_task.abort();
-    stderr_task.abort();
-
-    let stdout_text = out_buf.snapshot();
-    let stderr_text = err_buf.snapshot();
-    let ended_at = now_secs();
-
-    let (status, exit_code, stderr_final) = if timed_out {
-        (Status::Failed, None, format!("TIMED OUT after {}s\n{stderr_text}", timeout.as_secs()))
-    } else {
-        let st = exit_res
-            .unwrap()
-            .with_context(|| format!("waiting on '{}'", task.id))?;
-        // `group` drop deregisters; no kill needed since the child exited.
-        let code = st.code();
-        if st.success() {
-            (Status::Done, code, stderr_text.clone())
-        } else {
-            (Status::Failed, code, stderr_text.clone())
-        }
-    };
-
-    // The honest reason a failed attempt failed, in the manifest (postmortem
-    // bug 1: the live zori-review run showed two `failed` nodes with
-    // `error: null` because nothing recorded the cause). Wording matches the
-    // `TIMED OUT` prefix already written into stderr, so the watchdog's
-    // timeout classification and any grep-based tooling stay consistent.
-    let fail_reason = match status {
-        Status::Done => None,
-        _ => Some(if timed_out {
-            format!("TIMED OUT after {}s (killed with its process group)", timeout.as_secs())
-        } else {
-            match exit_code {
-                Some(c) => format!("exited with code {c}"),
-                None => "killed by signal (no exit code)".to_string(),
-            }
-        }),
-    };
-
-    // Persist artifacts on every terminal path, including timeout — the whole
-    // point of capturing partial output from a killed or hung run. err.txt is
-    // written always now: stderr of a *successful* agent is often where the
-    // interesting diagnostics went.
-    if let (Some(a), Some(adir)) = (art, &attempt_dir) {
-        let _ = tokio::fs::write(adir.join("out.txt"), &stdout_text).await;
-        let _ = tokio::fs::write(adir.join("err.txt"), &stderr_final).await;
-        let meta = AttemptMeta {
-            harness: conn.id.clone(),
-            model: task.model.clone(),
-            argv: sp.argv.clone(),
-            env_keys: env_keys(&conn, task),
-            status: status.label().to_string(),
-            exit_code,
-            started_at: Some(started_at),
-            ended_at: Some(ended_at),
-            cwd: Some(cwd.clone()),
-            prompt_sha256: artifacts::sha256_hex(prompt.as_bytes()),
-        };
-        let _ = artifacts::write_meta(adir, &meta);
-        a.manifest.record_attempt(
-            &task.id,
-            &conn.id,
-            task.model.clone(),
-            task.optional,
-            "r0",
-            AttemptRecord {
-                status: status.label().to_string(),
-                error: fail_reason,
-                exit_code,
-                started_at: Some(started_at),
-                ended_at: Some(ended_at),
-                cwd: Some(cwd.clone()),
-                session: None,
-                out: Some(OutFile {
-                    path: a.dirs.relative(&adir.join("out.txt")),
-                    sha256: artifacts::sha256_hex(stdout_text.as_bytes()),
-                    bytes: stdout_text.len(),
-                }),
-            },
-        );
-    }
-
-    Ok(TaskResult {
-        id: task.id.clone(),
-        status,
-        output: stdout_text,
-        stderr: stderr_final,
-        exit_code,
-        optional: task.optional,
-    })
-}
-
-/// Append-only line buffer shared between a reader task and `run_task`, so a
+/// Append-only line buffer shared between a reader and the capture loop, so a
 /// killed child still leaves its partial output for the artifact files.
 #[derive(Clone, Default)]
 struct SharedBuf {
@@ -1280,25 +701,6 @@ fn first_line(s: &str) -> String {
     }
 }
 
-// ===========================================================================
-// Tracked / interactive driver — the engine behind `zori ui`.
-//
-// This is deliberately SEPARATE from `run()`/`run_task` above, which is the
-// fully-tested print-and-forget path (16 tests lean on its exact stdout,
-// timeout ordering and artifact layout) and is left untouched. The tracked
-// path reuses the private primitives (`SharedBuf`, `read_stream`,
-// `GroupRegistration`, `connector_for`, `render_prompt`, …) but keeps its own
-// execution loop so a change here can never regress the classic path.
-//
-// The point of the split: `run()` spawns a child, captures stdout, done — the
-// agent is gone and un-steerable. `TrackedRun` records, for every node, the
-// harness *session handle* (`SessionRef`) and a `turns` transcript, so the
-// console can resume a finished node with a fresh human message (steer) and
-// flow the corrected output downstream. Resume mechanics are per the spike:
-// coddy reopens a print-run by `-session-id` under an isolated `-sessions-dir`
-// (deterministic, no cross-talk); codex resumes `--json <thread_id>`.
-// ===========================================================================
-
 /// Unix seconds — for transcript timestamps and the coddy session nonce.
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
@@ -1324,8 +726,7 @@ fn new_coddy_session_id(run_id: &str, node: &str) -> String {
 /// How to drive one node: a first run (build from scratch) or a resume (steer).
 enum ExecMode {
     /// Build from scratch. Carries the upstream outputs map frozen *before
-    /// this node's level started* — the same per-level snapshot the classic
-    /// `run()` clones into its children — so same-level siblings running
+    /// this node's level started* so same-level siblings running
     /// concurrently can never observe each other's output: a
     /// `${steps.x.output}` without a declared dep fails deterministically
     /// instead of resolving by scheduler luck.
@@ -1365,6 +766,8 @@ pub struct TrackedRun {
     overrides: Arc<std::sync::RwLock<HashMap<String, Task>>>,
     /// Wakes waiters after an addressed answer is committed to the snapshot.
     answers: Arc<tokio::sync::Notify>,
+    operator_input_closed: Arc<AtomicBool>,
+    unattended: bool,
     /// The live canvas graph the operator last sent with a chat turn (steer or
     /// an ASK answer). The planner's next prompt is built on THIS, not on the
     /// stale graph still in its session, so a node the operator dragged or a
@@ -1415,8 +818,22 @@ impl TrackedRun {
             art,
             overrides: Arc::new(std::sync::RwLock::new(HashMap::new())),
             answers: Arc::new(tokio::sync::Notify::new()),
+            operator_input_closed: Arc::new(AtomicBool::new(false)),
+            unattended: false,
             canvas: Arc::new(StdMutex::new(None)),
         })
+    }
+
+    /// Force unattended supervision when the terminal has no interactive input.
+    pub fn with_unattended(mut self, unattended: bool) -> Self {
+        self.unattended = unattended;
+        self
+    }
+
+    /// Wake parked nodes when the terminal can no longer read an answer.
+    pub fn close_operator_input(&self) {
+        self.operator_input_closed.store(true, Ordering::Relaxed);
+        self.answers.notify_waiters();
     }
 
     /// The task as it should run *now*: the operator's edit if one was
@@ -1453,10 +870,8 @@ impl TrackedRun {
     }
 
     /// The outputs map used to render a node's `in`/`out`: completed nodes give
-    /// their stdout; a *missing* value for a best-effort (`optional`) node
-    /// resolves to an honest gap rather than a hard `${steps…}` error (mirrors
-    /// `run()`'s `missing_output`). Any other unmet reference is an error at
-    /// render time, exactly as in the classic path.
+    /// their stdout; a missing best-effort output resolves to a placeholder.
+    /// Other unmet references are render errors.
     fn outputs_snapshot(&self, emitter: &Emitter) -> HashMap<String, String> {
         let snap = emitter.snapshot();
         let mut outputs = HashMap::new();
@@ -1518,25 +933,21 @@ impl TrackedRun {
 
     /// Run every node, level by level, updating `emitter` as it goes. The
     /// nodes of one level run **concurrently**, capped by
-    /// `flow.max_parallel` (unset → the whole level at once — the same
-    /// contract as the classic `run()`); the level barrier is kept, so the
-    /// whole level is terminal before the next one spawns. A node failure
-    /// marks it `Failed` and cascades `Skipped` to dependents; best-effort
-    /// (`optional`) failures never block a join. Mirrors `run()`'s cascade
-    /// (D3). Returns when the whole plan has reached a terminal state.
+    /// `flow.max_parallel` (unset → the whole level at once). Each level
+    /// reaches a terminal state before the next spawns. A required node
+    /// failure cascades `Skipped` to dependents (D3).
     pub async fn run_all(&self, emitter: &Emitter) {
         install_death_handlers();
         for (li, level) in self.plan.levels.iter().enumerate() {
-            println!("── level {li}: {}", level.join(", "));
-            // Partition this level into runnable vs skipped-because-a-dep-died
-            // (same predicate as the classic path) BEFORE spawning anything.
+            emitter.emit(RunEvent::Level(li, level));
+            // Determine skips before spawning any siblings.
             let mut runnable: Vec<Task> = Vec::new();
             for id in level {
                 let task = self.task(id).unwrap_or_else(|| {
                     panic!("task '{id}' is in the plan but missing from the flow")
                 });
                 if self.blocked(emitter, &task) {
-                    println!("  [{id}] skipped (a dependency did not complete)");
+                    emitter.emit(RunEvent::Finished(id, TaskStatus::Skipped, "(a dependency did not complete)"));
                     let blockers = self.blocker_names(emitter, &task);
                     emitter.mutate(|st| {
                         if let Some(n) = st.nodes.get_mut(id) {
@@ -1612,23 +1023,23 @@ impl TrackedRun {
             handles.push((id, tokio::spawn(async move {
                 let _owner = owner;
                 let _permit = this.permits.acquire().await.expect("semaphore closed");
-                match this.exec(&emitter, &task, ExecMode::FirstRun { outputs }).await {
-                    Ok(()) => {
-                        let st = emitter.snapshot();
-                        if let Some(n) = st.nodes.get(&task.id) {
-                            println!("  [{}] {} {}", n.id, n.status.label(), first_line(&n.output));
+                emitter.emit(RunEvent::Started(&task.id, &task.harness));
+                if let Err(e) = this.exec(&emitter, &task, ExecMode::FirstRun { outputs }).await {
+                    emitter.mutate(|st| {
+                        if let Some(n) = st.nodes.get_mut(&task.id) {
+                            n.status = TaskStatus::Failed;
+                            n.stderr = format!("driver error: {e:#}");
+                            n.finished_at = Some(now_secs());
                         }
-                    }
-                    Err(e) => {
-                        println!("  [{}] error: {e:#}", task.id);
-                        emitter.mutate(|st| {
-                            if let Some(n) = st.nodes.get_mut(&task.id) {
-                                n.status = TaskStatus::Failed;
-                                n.stderr = format!("driver error: {e:#}");
-                                n.finished_at = Some(now_secs());
-                            }
-                        });
-                    }
+                    });
+                }
+                if let Some(n) = emitter.snapshot().nodes.get(&task.id) {
+                    let detail = if n.status == TaskStatus::Failed {
+                        n.stderr.lines().next().unwrap_or("").to_owned()
+                    } else {
+                        first_line(&n.output)
+                    };
+                    emitter.emit(RunEvent::Finished(&n.id, n.status, &detail));
                 }
             })));
         }
@@ -1640,7 +1051,7 @@ impl TrackedRun {
         // panic.
         for (id, h) in handles {
             if let Err(join_err) = h.await {
-                println!("  [{id}] panicked: {join_err}");
+                emitter.emit(RunEvent::Finished(&id, TaskStatus::Failed, &format!("task panicked: {join_err}")));
                 let id2 = id.clone();
                 emitter.mutate(move |st| {
                     if let Some(n) = st.nodes.get_mut(&id2) {
@@ -1936,7 +1347,7 @@ impl TrackedRun {
             let nonce = mode_nonce(&mode, 0);
             return self.exec_once(emitter, task, &mode, &nonce, None, false).await.map(|_| ());
         }
-        let settings = Settings::for_task(&self.flow, task);
+        let settings = supervision_settings(&self.flow, task, self.unattended);
         let mut nudges_left = if manual { 0 } else { settings.nudges };
         let mut retries_left = if manual { 0 } else { settings.retry };
         let mut auto_answers_left = crate::watchdog::AUTO_ANSWERS_MAX;
@@ -1959,7 +1370,7 @@ impl TrackedRun {
                     let Some(SessionRef::Coddy { sessions_dir, session_id }) = n.session else { break };
                     if nudges_left == 0 { break; }
                     nudges_left -= 1;
-                    emitter.append_turn(&task.id, Role::System, format!(
+                    Self::watchdog_note(emitter, &task.id, format!(
                         "[watchdog] Coddy hit its limit of {steps} steps. Requesting the final report in the same session."
                     ));
                     mode = ExecMode::CoddySummary { sessions_dir, session_id };
@@ -1968,9 +1379,9 @@ impl TrackedRun {
                 Verdict::Retry(reason) if retries_left > 0 => {
                     retries_left -= 1;
                     attempt_no += 1;
-                    emitter.append_turn(
+                    Self::watchdog_note(
+                        emitter,
                         &task.id,
-                        Role::System,
                         format!("[watchdog] attempt failed ({reason}) — restarting from scratch, {retries_left} retries left"),
                     );
                     self.reset_node(emitter, &task.id);
@@ -1982,9 +1393,9 @@ impl TrackedRun {
                     && resumable(&n.session) =>
                 {
                     auto_answers_left -= 1;
-                    emitter.append_turn(
+                    Self::watchdog_note(
+                        emitter,
                         &task.id,
-                        Role::System,
                         format!(
                             "[watchdog] question in unattended mode, auto-answering ({auto_answers_left} auto-answers left):\n{}",
                             crate::watchdog::AUTO_ANSWER
@@ -2008,9 +1419,9 @@ impl TrackedRun {
                 }
                 Verdict::Nudge(kind) if nudges_left > 0 && resumable(&n.session) => {
                     nudges_left -= 1;
-                    emitter.append_turn(
+                    Self::watchdog_note(
+                        emitter,
                         &task.id,
-                        Role::System,
                         format!(
                             "[watchdog] the reply looks unfinished, nudging ({nudges_left} nudges left):\n{}",
                             crate::watchdog::nudge_text(kind)
@@ -2034,6 +1445,11 @@ impl TrackedRun {
             }
         }
         Ok(())
+    }
+
+    fn watchdog_note(emitter: &Emitter, id: &str, text: String) {
+        emitter.emit(RunEvent::Watchdog(id, &text));
+        emitter.append_turn(id, Role::System, text);
     }
 
     /// The propose→validate→(fix) gate, run once when a chat node's turn is
@@ -2154,17 +1570,24 @@ impl TrackedRun {
             tokio::pin!(notified);
             notified.as_mut().enable();
             let mut response = None;
-            let mut expired = false;
+            let mut failed = false;
             emitter.mutate(|st| {
                 let n = st.nodes.get_mut(id).expect("executing node");
                 let mut open: Vec<_> = n.questions.iter_mut().filter(|q| !q.closed).collect();
                 if let Some(q) = open.iter().find(|q| q.answer.is_none()) {
                     n.ask = Some(format!("ASK: {}", q.text));
                     n.status = TaskStatus::Waiting;
-                    expired = timeout_secs > 0 && deadline.is_some_and(|d| tokio::time::Instant::now() >= d);
-                    if !expired { return; }
+                    let expired = timeout_secs > 0 && deadline.is_some_and(|d| tokio::time::Instant::now() >= d);
+                    n.stderr = if self.operator_input_closed.load(Ordering::Relaxed) {
+                        "watchdog: operator input closed before an answer".into()
+                    } else if expired {
+                        format!("watchdog: operator answer timed out after {timeout_secs}s")
+                    } else {
+                        return;
+                    };
+                    failed = true;
                     n.status = TaskStatus::Failed;
-                    n.stderr = format!("watchdog: operator answer timed out after {timeout_secs}s");
+                    n.finished_at = Some(now_secs());
                 } else {
                     response = Some(if open.len() == 1 && !open[0].inline {
                         open[0].answer.clone().expect("answered")
@@ -2177,7 +1600,7 @@ impl TrackedRun {
                 for q in &mut open { q.closed = true; }
                 n.ask = None;
             });
-            if expired || response.is_some() { return response; }
+            if failed || response.is_some() { return response; }
             if let Some(d) = deadline.filter(|_| timeout_secs != 0) {
                 let _ = tokio::time::timeout_at(d, notified).await;
             } else {
@@ -2277,6 +1700,7 @@ impl TrackedRun {
             });
             let _ = tokio::fs::write(attempt_dir.join("prompt.txt"), &reply).await;
             let _ = tokio::fs::write(attempt_dir.join("out.txt"), &reply).await;
+            let _ = tokio::fs::write(attempt_dir.join("err.txt"), error.as_deref().unwrap_or("")).await;
             let _ = artifacts::write_meta(
                 &attempt_dir,
                 &AttemptMeta {
@@ -2322,7 +1746,7 @@ impl TrackedRun {
         let (mut sp, harness_session, prompt) = match &mode {
             ExecMode::FirstRun { outputs } => {
                 let preamble = if crate::watchdog::preamble_applies(&conn) {
-                    crate::watchdog::preamble(&crate::watchdog::Settings::for_task(&self.flow, task))
+                    supervision.and_then(crate::watchdog::preamble)
                 } else {
                     None
                 };
@@ -2560,7 +1984,7 @@ impl TrackedRun {
             }
         });
 
-        // Persist artifacts, mirroring run_task (full text even on timeout):
+        // Persist the full captured text, including on timeout:
         // one directory per attempt under the task's subtree, plus the
         // manifest record with the session handle a fork would need to resume.
         let ended_at = now_secs();
@@ -2727,15 +2151,9 @@ fn env_pairs(conn: &Connector, task: &Task) -> Vec<(String, String)> {
     v
 }
 
-/// Spawn a child and capture it, reusing `run_task`'s hard-won discipline:
-/// readers started before stdin (no pipe deadlock), `wait()` raced against a
-/// deadline and a heartbeat ticker, kill-the-whole-group *before* draining on
-/// timeout, a bounded reader grace, and partial-output snapshots so a killed
-/// run still yields text. The console receives progress on every heartbeat,
-/// on deadline extensions and after the final drain.
-// Mirrors `run_task`'s parameter list deliberately: it is the same spawn
-// contract plus two progress args; folding them into a struct here would make
-// the two loops harder to diff against each other.
+/// Start reading output before feeding stdin. On timeout, kill the process
+/// group before draining with a bounded grace period so partial output is
+/// available even after a kill.
 #[allow(clippy::too_many_arguments)]
 async fn spawn_captured(
     program: &str,
@@ -2796,9 +2214,7 @@ async fn spawn_captured(
     }));
     let mut stderr_task = tokio::spawn(read_stream(stderr, err_buf.clone()));
 
-    // Clock starts before stdin is fed (review F01), same discipline as
-    // run_task: a child that never drains a big prompt must not sit outside
-    // the deadline.
+    // A child that never drains a big prompt is still subject to the deadline.
     let start = Instant::now();
     let timer_start = tokio::time::Instant::now();
     let mut deadline = timer_start + timeout;
@@ -2813,12 +2229,12 @@ async fn spawn_captured(
                 r = si.write_all(text.as_bytes()) => {
                     if let Err(e) = r {
                         if e.kind() != std::io::ErrorKind::BrokenPipe {
-                            eprintln!("  [{node_id}] stdin write error: {e}");
+                            emitter.emit(RunEvent::Notice(node_id, &format!("stdin write error: {e}")));
                         }
                     }
                 }
                 _ = tokio::time::sleep_until(deadline) => {
-                    eprintln!("  [{node_id}] TIMED OUT feeding stdin ({}s)", timeout.as_secs());
+                    emitter.emit(RunEvent::Notice(node_id, &format!("TIMED OUT feeding stdin ({}s)", timeout.as_secs())));
                     timed_out = true;
                 }
             }
@@ -2851,7 +2267,7 @@ async fn spawn_captured(
                 if let Some(reason) = evidence {
                     deadline = tokio::time::Instant::now() + EXTENSION;
                     let note = format!("[watchdog] {reason}. Deadline extended by 10 minutes.");
-                    eprintln!("  [{node_id}] {note}");
+                    emitter.emit(RunEvent::Notice(node_id, &note));
                     emitter.append_turn(node_id, Role::System, note);
                 } else {
                     timed_out = true;
@@ -2859,7 +2275,7 @@ async fn spawn_captured(
             }
             _ = ticker.tick() => {
                 let secs = start.elapsed().as_secs();
-                println!("  [{node_id}] … running {secs}s, {} bytes out so far", out_buf.bytes());
+                emitter.emit(RunEvent::Progress(node_id, secs, out_buf.bytes()));
                 push_progress(out_buf.bytes(), out_buf.lines(), secs);
             }
         }
@@ -2867,7 +2283,7 @@ async fn spawn_captured(
 
     let timeout = deadline.duration_since(timer_start);
     if timed_out {
-        eprintln!("  [{node_id}] TIMED OUT after {}s — killing group", timeout.as_secs());
+        emitter.emit(RunEvent::Notice(node_id, &format!("TIMED OUT after {}s — killing group", timeout.as_secs())));
         group.kill_group().await;
         let _ = tokio::time::timeout(Duration::from_secs(10), &mut wait).await;
     }
@@ -2999,7 +2415,7 @@ mod tracked_tests {
         // A dry run over the same flow must not error on the path refs (the
         // old shape returned Err("unknown reference '${task.work}'")).
         let plan = plan(&flow).unwrap();
-        dry_run(&flow, &plan, &[]).expect("dry_run survives path refs");
+        dry_run(&flow, &plan, &[], true).expect("dry_run survives path refs");
     }
 
     // Review M10: the README promises `${project.dir}` = "the flow cwd, or
@@ -3780,9 +3196,8 @@ echo '{"type":"turn.completed"}'
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A tracked timeout must look like the classic one: a `TIMED OUT` line
-    /// on the node and in `err.txt` (the watchdog classifies retries by
-    /// grepping stderr), and the reason in the manifest `error`.
+    /// A timeout leaves a `TIMED OUT` line on the node and in `err.txt`,
+    /// with the reason in the manifest's `error` field.
     #[tokio::test]
     async fn tracked_timeout_records_the_reason() {
         let dir = std::env::temp_dir().join(format!("zori-trk-timeout-{}", now_secs()));
@@ -4563,6 +3978,23 @@ mod tests {
         d
     }
 
+    async fn run_fixture(flow: &Flow, root: &Path) -> crate::state::RunState {
+        let plan = plan(flow).expect("plan");
+        let wanted = artifacts::new_run_id(&flow.name);
+        let (dir, id) = artifacts::reserve_run_dir(root, &wanted).expect("reserve run dir");
+        let tasks = flow.tasks.iter()
+            .map(|t| (t.id.clone(), t.harness.clone(), t.model.clone(), t.optional, t.depends_on.clone()))
+            .collect::<Vec<_>>();
+        let emitter = Emitter::new(crate::state::RunState::new(
+            id, flow.name.clone(), "test.yml".into(), Some(dir.clone()), plan.levels.clone(), &tasks,
+        ));
+        let tracked = TrackedRun::new(flow.clone(), plan, &[], dir.clone(), dir.join("sessions"))
+            .expect("tracked run")
+            .with_unattended(true);
+        tracked.run_all(&emitter).await;
+        emitter.snapshot()
+    }
+
     /// A minimal Task shell for unit tests; fields get filled per test.
     fn plain_task(id: &str) -> Task {
         Task {
@@ -4634,9 +4066,8 @@ mod tests {
     async fn artifacts_land_in_per_task_attempt_dirs() {
         let root = test_runs_root();
         let flow = sh_flow("layout-test", "only", "echo hi");
-        let p = plan(&flow).expect("plan");
-        let report = run(&flow, &p, &[], &root).await.expect("run ok");
-        assert_eq!(report.succeeded(), 1);
+        let report = run_fixture(&flow, &root).await;
+        assert_eq!(report.nodes["only"].status, TaskStatus::Done);
 
         let run_dir = report.out_dir.expect("run dir recorded");
         let attempt = run_dir.join("tasks").join("only").join("r0");
@@ -4671,9 +4102,8 @@ mod tests {
     async fn isolated_workdir_is_the_child_cwd() {
         let root = test_runs_root();
         let flow = sh_flow("workdir-test", "where", "pwd");
-        let p = plan(&flow).expect("plan");
-        let report = run(&flow, &p, &[], &root).await.expect("run ok");
-        let out = &report.results["where"].output;
+        let report = run_fixture(&flow, &root).await;
+        let out = &report.nodes["where"].output;
         let expected = report.out_dir.unwrap().join("tasks/where/work").canonicalize().unwrap();
         assert_eq!(std::path::Path::new(out.trim()).canonicalize().unwrap(), expected);
     }
@@ -4831,11 +4261,11 @@ mod tests {
         assert!(!bare.contains("# Skill"), "no block when none passed: {bare:?}");
     }
 
-    /// The `prompt` harness in the classic driver: no process runs, the node's
+    /// The `prompt` harness runs in-process, and the node's
     /// output is its rendered text, and a dependent receives it as a
     /// `# prompt` section — the starting-block pattern end to end.
     #[tokio::test]
-    async fn prompt_block_feeds_dependents_classic() {
+    async fn prompt_block_feeds_a_child_process() {
         let root = test_runs_root();
         let mut harnesses = BTreeMap::new();
         harnesses.insert(
@@ -4861,16 +4291,16 @@ mod tests {
                 Task { harness: "catting".into(), in_field: "You are a reviewer.".into(), depends_on: vec!["prompt".into()], ..plain_task("worker") },
             ],
         };
-        let p = plan(&flow).expect("plan");
-        let report = run(&flow, &p, &[], &root).await.expect("run ok");
-        assert_eq!(report.succeeded(), 2, "both nodes done");
-        assert_eq!(report.results["prompt"].output, "The project needs a review");
-        let fed = &report.results["worker"].output;
+        let report = run_fixture(&flow, &root).await;
+        assert!(report.nodes.values().all(|n| n.status == TaskStatus::Done), "both nodes done");
+        assert_eq!(report.nodes["prompt"].output, "The project needs a review");
+        let fed = &report.nodes["worker"].output;
         assert!(fed.contains("You are a reviewer.\n\n# prompt\nThe project needs a review"), "worker saw the fed section: {fed:?}");
         // The prompt node recorded an attempt like any harness.
         let run_dir = report.out_dir.unwrap();
         let out = std::fs::read_to_string(run_dir.join("tasks/prompt/r0/out.txt")).unwrap();
         assert_eq!(out, "The project needs a review");
+        assert_eq!(std::fs::read_to_string(run_dir.join("tasks/prompt/r0/err.txt")).unwrap(), "");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -4943,10 +4373,9 @@ mod tests {
                 },
             ],
         };
-        let p = plan(&flow).expect("plan");
-        let report = run(&flow, &p, &[], &root).await.expect("run ok");
-        assert_eq!(report.succeeded(), 2, "both tasks done");
-        let out = &report.results["reader"].output;
+        let report = run_fixture(&flow, &root).await;
+        assert!(report.nodes.values().all(|n| n.status == TaskStatus::Done), "both tasks done");
+        let out = &report.nodes["reader"].output;
         assert!(
             out.contains("secret-note"),
             "reader got the upstream work file via ${{steps.id.dir}}, got {out:?}"
@@ -4962,9 +4391,8 @@ mod tests {
         let mut flow = sh_flow("legacy-cwd-test", "where", "pwd");
         flow.cwd = Some(project.clone());
         flow.tasks[0].workspace = Some(crate::config::Workspace::Flow);
-        let p = plan(&flow).expect("plan");
-        let report = run(&flow, &p, &[], &root).await.expect("run ok");
-        let out = &report.results["where"].output;
+        let report = run_fixture(&flow, &root).await;
+        let out = &report.nodes["where"].output;
         assert!(
             out.contains(&project.file_name().unwrap().to_string_lossy().to_string()),
             "pwd should be the flow cwd {project:?}, got {out:?}"
@@ -4977,9 +4405,8 @@ mod tests {
     async fn run_ids_do_not_collide_within_a_second() {
         let root = test_runs_root();
         let flow = sh_flow("id-test", "only", "echo x");
-        let p = plan(&flow).expect("plan");
-        let a = run(&flow, &p, &[], &root).await.expect("run 1");
-        let b = run(&flow, &p, &[], &root).await.expect("run 2");
+        let a = run_fixture(&flow, &root).await;
+        let b = run_fixture(&flow, &root).await;
         assert_ne!(
             a.out_dir, b.out_dir,
             "two runs in the same second must get distinct dirs"
@@ -5006,7 +4433,7 @@ mod tests {
         Flow {
            skills: vec![],
            skills_dirs: vec![],
-            watchdog: None,
+            watchdog: Some(crate::config::Watchdog { retry: Some(0), ..Default::default() }),
             name: "timeout-test".to_string(),
             cwd: None,
             default_timeout_secs: Some(timeout_secs),
@@ -5042,19 +4469,17 @@ mod tests {
     #[tokio::test]
     async fn timeout_kills_a_hung_task_instead_of_hanging() {
         let flow = hanging_flow(2);
-        let p = plan(&flow).expect("plan");
 
         let run = tokio::time::timeout(
             Duration::from_secs(20),
-            run(&flow, &p, &[], &test_runs_root()),
+            run_fixture(&flow, &test_runs_root()),
         )
         .await;
 
         let report = run
-            .expect("run() must return within its own budget; hung = the timeout-deadlock bug is back")
-            .expect("run() itself returned Err");
-        let r = report.results.get("slow").expect("slow task result present");
-        assert_eq!(r.status, Status::Failed, "a timed-out task is Failed");
+            .expect("run must return within its own budget");
+        let r = report.nodes.get("slow").expect("slow task result present");
+        assert_eq!(r.status, TaskStatus::Failed, "a timed-out task is Failed");
         assert_eq!(r.exit_code, None, "a killed task has no exit code");
         assert!(
             r.stderr.starts_with("TIMED OUT"),
@@ -5093,7 +4518,7 @@ mod tests {
         );
     }
 
-    /// Postmortem bug 1 (classic driver): the live zori-review run showed
+    /// Postmortem bug 1: the live zori-review run showed
     /// `failed` nodes with `error: null` in the manifest — nothing recorded
     /// WHY an attempt failed. A non-zero exit now records the code, a timeout
     /// records the reason, in the manifest and in `err.txt`.
@@ -5101,12 +4526,11 @@ mod tests {
     async fn failed_and_timed_out_attempts_record_the_reason_in_the_manifest() {
         // Non-zero exit.
         let flow = sh_flow("manifest-fail", "boom", "echo noisy >&2; exit 3");
-        let p = plan(&flow).expect("plan");
-        let report = run(&flow, &p, &[], &test_runs_root()).await.expect("run ok");
-        let r = &report.results["boom"];
-        assert_eq!(r.status, Status::Failed);
+        let report = run_fixture(&flow, &test_runs_root()).await;
+        let r = &report.nodes["boom"];
+        assert_eq!(r.status, TaskStatus::Failed);
         assert_eq!(r.exit_code, Some(3));
-        let run_dir = report.out_dir.clone().expect("classic run has an out dir");
+        let run_dir = report.out_dir.clone().expect("run has an out dir");
         let manifest: artifacts::Manifest = serde_json::from_str(
             &std::fs::read_to_string(run_dir.join("manifest.json")).unwrap(),
         )
@@ -5126,12 +4550,10 @@ mod tests {
             "-c".into(),
             "exec -a zori-probe-manifest-hanger sleep 300".into(),
         ]);
-        let p = plan(&flow).expect("plan");
-        let report = tokio::time::timeout(Duration::from_secs(20), run(&flow, &p, &[], &test_runs_root()))
+        let report = tokio::time::timeout(Duration::from_secs(20), run_fixture(&flow, &test_runs_root()))
             .await
-            .expect("returns within budget")
-            .expect("run ok");
-        assert_eq!(report.results["slow"].status, Status::Failed);
+            .expect("returns within budget");
+        assert_eq!(report.nodes["slow"].status, TaskStatus::Failed);
         let run_dir = report.out_dir.clone().expect("out dir");
         let manifest: artifacts::Manifest = serde_json::from_str(
             &std::fs::read_to_string(run_dir.join("manifest.json")).unwrap(),
@@ -5168,12 +4590,10 @@ mod tests {
             "exec -a zori-probe-precedence-hanger sleep 300".into(),
         ]);
         flow.tasks[0].timeout_secs = Some(2); // task wins: 2s, not 300s
-        let p = plan(&flow).expect("plan");
-        let report = tokio::time::timeout(Duration::from_secs(20), run(&flow, &p, &[], &test_runs_root()))
+        let report = tokio::time::timeout(Duration::from_secs(20), run_fixture(&flow, &test_runs_root()))
             .await
-            .expect("killed near 2s, not held to the 300s flow default")
-            .expect("run ok");
-        assert_eq!(report.results["slow"].status, Status::Failed);
+            .expect("killed near 2s, not held to the 300s flow default");
+        assert_eq!(report.nodes["slow"].status, TaskStatus::Failed);
         let run_dir = report.out_dir.clone().expect("out dir");
         let manifest: artifacts::Manifest = serde_json::from_str(
             &std::fs::read_to_string(run_dir.join("manifest.json")).unwrap(),
@@ -5187,17 +4607,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&run_dir);
     }
 
-    /// Contract (review minor): every real attempt carries wall-clock
-    /// bookkeeping. `artifacts.rs` only ever asserted `started_at` via hand-
-    /// written literals; this proves the actual classic driver RECORDS them on
-    /// a done attempt — non-zero, and `ended_at` never before `started_at`.
+    /// A completed attempt records ordered wall-clock timestamps.
     #[tokio::test]
     async fn completed_attempt_records_start_and_end_time() {
         let flow = sh_flow("timing", "tick", "echo hi");
-        let p = plan(&flow).expect("plan");
-        let report = run(&flow, &p, &[], &test_runs_root()).await.expect("run ok");
-        assert_eq!(report.results["tick"].status, Status::Done);
-        let run_dir = report.out_dir.clone().expect("classic run has an out dir");
+        let report = run_fixture(&flow, &test_runs_root()).await;
+        assert_eq!(report.nodes["tick"].status, TaskStatus::Done);
+        let run_dir = report.out_dir.clone().expect("run has an out dir");
         let manifest: artifacts::Manifest = serde_json::from_str(
             &std::fs::read_to_string(run_dir.join("manifest.json")).unwrap(),
         )
@@ -5293,10 +4709,9 @@ mod tests {
                 },
             ],
         };
-        let p = plan(&flow).expect("plan");
-        let report = run(&flow, &p, &[], &test_runs_root()).await.expect("run ok");
-        assert_eq!(report.succeeded(), 2, "both echo tasks succeed");
-        let b = report.results.get("b").unwrap();
+        let report = run_fixture(&flow, &test_runs_root()).await;
+        assert!(report.nodes.values().all(|n| n.status == TaskStatus::Done), "both echo tasks succeed");
+        let b = report.nodes.get("b").unwrap();
         assert!(
             b.output.contains("hello-from-a"),
             "b echoes a's captured output, got {:?}",
@@ -5308,8 +4723,7 @@ mod tests {
     /// (the zcode reviewer, which fails in print mode) used to skip the whole
     /// join via strict cascade. With `optional: true` on the branch, the join
     /// must still run and see an honest "did not complete" gap instead of its
-    /// output or a hard `${steps.a.output}` error. A hard failure is NOT
-    /// optional, so `failed()` stays 0 and only `degraded()` counts the branch.
+    /// output or a hard `${steps.a.output}` error.
     #[tokio::test]
     async fn optional_branch_failure_does_not_skip_the_join() {
         let mut harnesses = BTreeMap::new();
@@ -5378,17 +4792,16 @@ mod tests {
                 },
             ],
         };
-        let p = plan(&flow).expect("plan");
-        let report = run(&flow, &p, &[], &test_runs_root()).await.expect("run ok");
+        let report = run_fixture(&flow, &test_runs_root()).await;
 
-        let a = report.results.get("a").unwrap();
-        assert_eq!(a.status, Status::Failed, "the boom branch fails");
+        let a = report.nodes.get("a").unwrap();
+        assert_eq!(a.status, TaskStatus::Failed, "the boom branch fails");
         assert!(a.optional, "the branch is marked optional");
 
-        let join = report.results.get("join").expect("join ran");
+        let join = report.nodes.get("join").expect("join ran");
         assert_eq!(
             join.status,
-            Status::Done,
+            TaskStatus::Done,
             "the join must NOT be skipped when only an optional dep failed"
         );
         assert!(
@@ -5397,16 +4810,9 @@ mod tests {
             join.output
         );
 
-        assert_eq!(report.failed(), 0, "an optional failure is not a hard failure");
-        assert_eq!(report.degraded(), 1, "the optional failure counts as degraded");
+        assert_eq!(report.status, crate::state::RunStatus::Completed);
     }
 
-    /// Review (minor): a cascaded task (skipped because a required dependency
-    /// failed) used to be invisible in the run index — `AttemptRecord.error`
-    /// documented "which dependency blocked a skip" but skips were never
-    /// written. Now the classic driver records a `skipped` attempt naming the
-    /// blockers, so a reloaded manifest shows the task existed and why it ran
-    /// no agent.
     #[test]
     fn render_argv_never_leaks_live_shell_syntax() {
         // Review (minor): the old renderer left a no-whitespace token like
@@ -5435,6 +4841,7 @@ mod tests {
         assert_eq!(render_argv(&["".into()]), "''");
     }
 
+    /// A cascaded skip records the required dependency that blocked it.
     #[tokio::test]
     async fn skipped_dependent_is_recorded_in_the_manifest_with_its_blocker() {
         let mut harnesses = BTreeMap::new();
@@ -5502,12 +4909,11 @@ mod tests {
                 },
             ],
         };
-        let p = plan(&flow).expect("plan");
-        let report = run(&flow, &p, &[], &test_runs_root()).await.expect("run ok");
-        assert_eq!(report.results["a"].status, Status::Failed);
-        assert_eq!(report.results["b"].status, Status::Skipped, "b cascades");
+        let report = run_fixture(&flow, &test_runs_root()).await;
+        assert_eq!(report.nodes["a"].status, TaskStatus::Failed);
+        assert_eq!(report.nodes["b"].status, TaskStatus::Skipped, "b cascades");
 
-        let run_dir = report.out_dir.clone().expect("classic run has an out dir");
+        let run_dir = report.out_dir.clone().expect("run has an out dir");
         let manifest: artifacts::Manifest = serde_json::from_str(
             &std::fs::read_to_string(run_dir.join("manifest.json")).unwrap(),
         )

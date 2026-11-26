@@ -1,6 +1,5 @@
 //! The on-disk shape of a run: the single owner of every path zori writes,
-//! shared by both drivers (the classic `zori run` and the tracked `zori ui`
-//! engine). Nothing outside this module invents an artifact filename.
+//! for terminal and console runs.
 //!
 //! Layout under the runs root (default `zori-runs/`, override: `--runs-root`
 //! for `zori ui`, `ZORI_RUNS_ROOT` for `zori run`):
@@ -9,7 +8,7 @@
 //! <runs-root>/<run-id>/            run id: <flow>-<unix-millis>
 //!   manifest.json                  provenance index (this module; atomic rewrite)
 //!   state.json                     the ui server's live state (NOT ours)
-//!   sessions/                      coddy sessions root (tracked engine)
+//!   sessions/                      coddy sessions root
 //!   tasks/<task>/work/             the task's isolated cwd (workspace: task)
 //!   tasks/<task>/<attempt>/        one attempt: r0 = first run, t<secs> = steer
 //!     prompt.txt                   the fully rendered prompt, kept forever
@@ -192,15 +191,6 @@ pub struct RunDirs {
 }
 
 impl RunDirs {
-    /// Create the run directory tree (`<root>/tasks/` implied), atomically
-    /// claiming the name — see [`reserve_run_dir`] (review M9). When the base
-    /// id is taken the dir lands on `<run_id>-2` etc.; read it back with
-    /// [`Self::run_id`].
-    pub fn create(runs_root: &Path, run_id: &str) -> Result<Self> {
-        let (root, _) = reserve_run_dir(runs_root, run_id)?;
-        Ok(RunDirs { root })
-    }
-
     /// Wrap an existing run directory (e.g. reloaded by the ui server).
     pub fn open(root: PathBuf) -> Self {
         RunDirs { root }
@@ -243,16 +233,6 @@ impl RunDirs {
         let dir = self.task_dir(task_id);
         std::fs::create_dir_all(dir.join("work"))
             .with_context(|| format!("creating task dir {}", dir.display()))?;
-        Ok(dir)
-    }
-
-    /// Create one attempt directory (idempotent). Only for the first attempt
-    /// of a fresh task; a steer/rerun must go through [`Self::claim_attempt`]
-    /// so a second call cannot overwrite the first (review F03).
-    pub fn ensure_attempt(&self, task_id: &str, nonce: &str) -> Result<PathBuf> {
-        let dir = self.attempt_dir(task_id, nonce);
-        std::fs::create_dir_all(&dir)
-            .with_context(|| format!("creating attempt dir {}", dir.display()))?;
         Ok(dir)
     }
 
@@ -557,21 +537,19 @@ mod tests {
         assert_eq!(id2, "flow-1-2");
         assert_ne!(d1, d2, "the second claim must not adopt the first dir");
         assert!(!d2.join("manifest.json").exists());
-        // RunDirs::create keeps the same contract and reports the effective id.
-        let dirs = RunDirs::create(&root, "flow-1").unwrap();
-        assert_eq!(dirs.run_id(), "flow-1-3");
+        assert_eq!(RunDirs::open(d2).run_id(), id2);
         std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
     fn rundirs_layout_is_per_task_with_work_and_attempts() {
         let root = temp_root();
-        let dirs = RunDirs::create(&root, "demo-1").unwrap();
+        let dirs = RunDirs::open(reserve_run_dir(&root, "demo-1").unwrap().0);
         // injective sanitize (F03): ' ' → `-20`, '#' → `-23`
         let task = dirs.ensure_task("review #2").unwrap();
         assert_eq!(task, root.join("demo-1").join("tasks").join("review-20-232"));
         assert!(dirs.work_dir("review #2").is_dir(), "work dir created with the task");
-        let att = dirs.ensure_attempt("review #2", "r0").unwrap();
+        let (att, _) = dirs.claim_attempt("review #2", "r0").unwrap();
         assert_eq!(att, task.join("r0"));
         assert_eq!(
             dirs.relative(&att.join("out.txt")),
@@ -583,7 +561,7 @@ mod tests {
     #[test]
     fn manifest_records_attempts_and_survives_reload() {
         let root = temp_root();
-        let dirs = RunDirs::create(&root, "demo-2").unwrap();
+        let dirs = RunDirs::open(reserve_run_dir(&root, "demo-2").unwrap().0);
         let inputs = BTreeMap::from([("prompt".to_string(), "hi".to_string())]);
         let manifest = Manifest::new("demo-2", "demo", None, &inputs, &[vec!["a".into()]]);
         let store = ManifestStore::init(&dirs, manifest).unwrap();
@@ -648,7 +626,7 @@ mod tests {
         // that switched harness or model used to leave the manifest claiming
         // the original configuration forever.
         let root = temp_root();
-        let dirs = RunDirs::create(&root, "demo-sum").unwrap();
+        let dirs = RunDirs::open(reserve_run_dir(&root, "demo-sum").unwrap().0);
         let inputs = BTreeMap::new();
         let manifest = Manifest::new("demo-sum", "demo", None, &inputs, &[vec!["a".into()]]);
         let store = ManifestStore::init(&dirs, manifest).unwrap();
@@ -683,8 +661,8 @@ mod tests {
         // guarantees the file is either the old bytes or the new, never torn,
         // and the temp never survives a success.
         let root = temp_root();
-        let dirs = RunDirs::create(&root, "demo-meta").unwrap();
-        let att = dirs.ensure_attempt("a", "r0").unwrap();
+        let dirs = RunDirs::open(reserve_run_dir(&root, "demo-meta").unwrap().0);
+        let (att, _) = dirs.claim_attempt("a", "r0").unwrap();
         let meta = AttemptMeta {
             harness: "coddy".into(),
             model: Some("m1".into()),
@@ -719,7 +697,7 @@ mod tests {
         // init rewrites the file with an empty `tasks`, destroying the
         // attempt history of the run being reloaded.
         let root = temp_root();
-        let dirs = RunDirs::create(&root, "demo-4").unwrap();
+        let dirs = RunDirs::open(reserve_run_dir(&root, "demo-4").unwrap().0);
         std::fs::write(dirs.manifest_path(), b"{ not json").unwrap();
         let fresh = Manifest::new("demo-4", "d", None, &BTreeMap::new(), &[]);
         let err = ManifestStore::load_or_init(&dirs, fresh).unwrap_err();
@@ -732,7 +710,7 @@ mod tests {
     #[test]
     fn load_or_init_initialises_only_when_missing() {
         let root = temp_root();
-        let dirs = RunDirs::create(&root, "demo-5").unwrap();
+        let dirs = RunDirs::open(reserve_run_dir(&root, "demo-5").unwrap().0);
         assert!(!dirs.manifest_path().exists());
         let inputs = BTreeMap::from([("k".to_string(), "v".to_string())]);
         let store =
@@ -744,7 +722,7 @@ mod tests {
     #[test]
     fn manifest_write_is_atomic_no_tmp_left_behind() {
         let root = temp_root();
-        let dirs = RunDirs::create(&root, "demo-3").unwrap();
+        let dirs = RunDirs::open(reserve_run_dir(&root, "demo-3").unwrap().0);
         let _store = ManifestStore::init(&dirs, Manifest::new("demo-3", "d", None, &BTreeMap::new(), &[])).unwrap();
         assert!(dirs.manifest_path().is_file());
         assert!(

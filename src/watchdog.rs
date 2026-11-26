@@ -353,18 +353,6 @@ pub fn preamble(s: &Settings) -> Option<String> {
     }
 }
 
-/// The preamble the CLASSIC driver mixes: it has no chat, so the ask
-/// protocol would teach the model to park questions nobody can ever answer.
-/// An `ask: false` flow still gets no preamble at all; everything else runs
-/// as if unattended.
-pub fn preamble_for_classic(flow: &Flow, task: &Task) -> Option<String> {
-    let mut s = Settings::for_task(flow, task);
-    if s.ask {
-        s.unattended = true;
-    }
-    preamble(&s)
-}
-
 /// Only CLIs with a conversation contract receive operator instructions.
 pub fn preamble_applies(conn: &crate::connectors::Connector) -> bool {
     conn.is_agent && crate::connectors::steerable(conn)

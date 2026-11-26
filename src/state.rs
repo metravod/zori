@@ -1,12 +1,6 @@
-//! The run's observable state — the single source of truth that the `zori ui`
-//! server owns, persists to `state.json`, and streams to the browser.
-//!
-//! This is the "state spine" that turns zori from a print-and-forget batch
-//! runner into a collaborative console: every node carries not just its result
-//! but a *session handle* (so it can be resumed/steered) and a `turns`
-//! transcript (what the agent said and what the human wrote). The classic
-//! `zori run` path does not touch this module at all — it only runs when a run
-//! is driven through [`crate::ui`].
+//! Observable state shared by the terminal and the web console. Each node
+//! carries its result, session handle, and transcript. The console persists
+//! snapshots to `state.json` and streams them to the browser.
 //!
 //! Design notes for the MVP:
 //!   * Flows are tiny (a handful of nodes), so instead of fine-grained events
@@ -17,6 +11,7 @@
 //!     `GET /api/runs/:id`, the SSE stream, and `state.json` on disk.
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -336,9 +331,8 @@ impl RunState {
 
     /// Recompute the overall run status from node statuses. A run is `Completed`
     /// only when every node is terminal and no *strict* (non-optional) node
-    /// failed or was skipped-by-failure; optional failures are `degraded`, not
-    /// failed, matching `RunReport`'s accounting. A `Waiting` node keeps the
-    /// run `Running`: its child is gone but the run has not moved on.
+    /// failed or was skipped-by-failure. Optional failures are degraded.
+    /// A `Waiting` node keeps the run `Running` while it awaits an answer.
     pub fn recompute_status(&mut self) {
         let any_alive = self
             .nodes
@@ -372,15 +366,40 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
+/// Execution milestones and diagnostics, emitted once at the source.
+pub enum RunEvent<'a> {
+    Level(usize, &'a [String]),
+    Started(&'a str, &'a str),
+    Finished(&'a str, TaskStatus, &'a str),
+    Progress(&'a str, u64, usize),
+    Notice(&'a str, &'a str),
+    Watchdog(&'a str, &'a str),
+}
+
+impl fmt::Display for RunEvent<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Level(level, tasks) => write!(f, "── level {level}: {}", tasks.join(", ")),
+            Self::Started(id, harness) => write!(f, "  [{id}] started (harness={harness})"),
+            Self::Finished(id, status, detail) => write!(f, "  [{id}] {} {detail}", status.label()),
+            Self::Progress(id, secs, bytes) => write!(f, "  [{id}] … running {secs}s, {bytes} bytes out so far"),
+            Self::Notice(id, text) | Self::Watchdog(id, text) => write!(f, "  [{id}] {text}"),
+        }
+    }
+}
+
+type EventHandler = dyn Fn(RunEvent<'_>) + Send + Sync;
+
 /// The shared, observable handle to a run: the authoritative `RunState` behind a
 /// lock, plus a broadcast channel carrying whole snapshots for SSE subscribers.
 ///
-/// `Clone` is cheap (both fields are `Arc`). The executing task, the axum
+/// `Clone` is cheap. The executing task, the axum
 /// handlers and the persistence layer all hold clones of the same `Emitter`.
 #[derive(Clone)]
 pub struct Emitter {
     state: Arc<Mutex<RunState>>,
     tx: broadcast::Sender<RunState>,
+    event_handler: Option<Arc<EventHandler>>,
 }
 
 impl Emitter {
@@ -391,6 +410,26 @@ impl Emitter {
         Emitter {
             state: Arc::new(Mutex::new(initial)),
             tx,
+            event_handler: None,
+        }
+    }
+
+    /// Route execution messages to a frontend. The handler runs on the
+    /// emitting task and may be called concurrently.
+    pub fn with_event_handler(mut self, handler: impl Fn(RunEvent<'_>) + Send + Sync + 'static) -> Self {
+        self.event_handler = Some(Arc::new(handler));
+        self
+    }
+
+    pub(crate) fn emit(&self, event: RunEvent<'_>) {
+        if let Some(handler) = &self.event_handler {
+            handler(event);
+        } else {
+            match event {
+                RunEvent::Started(..) | RunEvent::Watchdog(..) => {}
+                RunEvent::Notice(..) => eprintln!("{event}"),
+                _ => println!("{event}"),
+            }
         }
     }
 

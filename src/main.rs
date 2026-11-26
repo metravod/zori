@@ -7,6 +7,7 @@
 //! chosen model. Run artifacts land under `zori-runs/` (override:
 //! `ZORI_RUNS_ROOT`).
 
+use std::io::{self, IsTerminal, Write};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
@@ -15,6 +16,7 @@ use clap::{Parser, Subcommand};
 
 use zori::config::Flow;
 use zori::runner;
+use zori::state::{Emitter, RunEvent, RunState, RunStatus, TaskStatus};
 
 #[derive(Parser)]
 #[command(name = "zori", version, about = "Run a task across several CLI coding agents as a small DAG")]
@@ -219,40 +221,19 @@ async fn real() -> Result<()> {
             }
             Ok(())
         }
-        Command::Run { flow, inputs, dry_run } => {
-            let text = std::fs::read_to_string(&flow)
-                .with_context(|| format!("reading flow {}", flow.display()))?;
+        Command::Run { flow: path, inputs, dry_run } => {
+            let text = std::fs::read_to_string(&path)
+                .with_context(|| format!("reading flow {}", path.display()))?;
             let flow: Flow = serde_yaml::from_str(&text)
-                .with_context(|| format!("parsing flow {}", flow.display()))?;
+                .with_context(|| format!("parsing flow {}", path.display()))?;
 
             let plan = runner::plan(&flow)?;
+            let interactive = io::stdin().is_terminal();
             if dry_run {
-                return runner::dry_run(&flow, &plan, &inputs);
+                return runner::dry_run(&flow, &plan, &inputs, !interactive);
             }
 
-            let report = runner::run(&flow, &plan, &inputs, &zori::artifacts::runs_root()).await?;
-            let degraded = report.degraded();
-            let degraded_note = if degraded > 0 {
-                format!(", {degraded} degraded (best-effort)")
-            } else {
-                String::new()
-            };
-            println!(
-                "\nflow '{}': {} done, {} failed, {} skipped{degraded_note} → {}",
-                flow.name,
-                report.succeeded(),
-                report.failed(),
-                report.skipped(),
-                report
-                    .out_dir
-                    .as_ref()
-                    .map(|d| d.display().to_string())
-                    .unwrap_or_default()
-            );
-            if report.failed() > 0 {
-                std::process::exit(1);
-            }
-            Ok(())
+            run_in_terminal(flow, plan, path, &inputs, interactive).await
         }
         Command::Ui { flow, inputs, bind, runs_root, flows_root } => {
             let addr: SocketAddr = bind
@@ -261,4 +242,222 @@ async fn real() -> Result<()> {
             zori::ui::start(addr, runs_root, flows_root, flow, inputs).await
         }
     }
+}
+
+async fn run_in_terminal(
+    flow: Flow,
+    plan: zori::dag::ExecutionPlan,
+    path: PathBuf,
+    inputs: &[(String, String)],
+    interactive: bool,
+) -> Result<()> {
+    let wanted = zori::artifacts::new_run_id(&flow.name);
+    let (out_dir, run_id) =
+        zori::artifacts::reserve_run_dir(&zori::artifacts::runs_root(), &wanted)
+            .with_context(|| format!("reserving run dir for '{wanted}'"))?;
+    let tasks = flow
+        .tasks
+        .iter()
+        .map(|t| {
+            (
+                t.id.clone(),
+                t.harness.clone(),
+                t.model.clone(),
+                t.optional,
+                t.depends_on.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut state = RunState::new(
+        run_id.clone(),
+        flow.name.clone(),
+        path,
+        Some(out_dir.clone()),
+        plan.levels.clone(),
+        &tasks,
+    );
+    state.recompute_status();
+    let emitter = Emitter::new(state).with_event_handler(|event| match event {
+        RunEvent::Notice(..) => eprintln!("{event}"),
+        _ => println!("{event}"),
+    });
+    let tracked = runner::TrackedRun::new(
+        flow,
+        plan,
+        inputs,
+        out_dir.clone(),
+        out_dir.join("sessions"),
+    )
+    .with_context(|| format!("initialising run '{run_id}'"))?
+    .with_unattended(!interactive);
+
+    if interactive {
+        let drive = tracked.run_all(&emitter);
+        tokio::pin!(drive);
+        tokio::select! {
+            () = &mut drive => {}
+            result = answer_questions(&tracked, &emitter) => {
+                if let Err(e) = result {
+                    eprintln!("operator input: {e:#}");
+                }
+                tracked.close_operator_input();
+                drive.await;
+            }
+        }
+    } else {
+        tracked.run_all(&emitter).await;
+    }
+
+    let state = emitter.snapshot();
+    let (mut done, mut failed, mut skipped, mut degraded) = (0, 0, 0, 0);
+    for node in state.nodes.values() {
+        match node.status {
+            TaskStatus::Done => done += 1,
+            TaskStatus::Failed if node.optional => degraded += 1,
+            TaskStatus::Failed => failed += 1,
+            TaskStatus::Skipped => skipped += 1,
+            _ => {}
+        }
+    }
+    let degraded_note = if degraded > 0 {
+        format!(", {degraded} degraded (best-effort)")
+    } else {
+        String::new()
+    };
+    println!(
+        "\nflow '{}': {done} done, {failed} failed, {skipped} skipped{degraded_note} → {}",
+        state.flow_name,
+        out_dir.display(),
+    );
+    match state.status {
+        RunStatus::Completed => Ok(()),
+        RunStatus::Failed => std::process::exit(1),
+        _ => anyhow::bail!("flow '{}' did not complete", state.flow_name),
+    }
+}
+
+async fn answer_questions(tracked: &runner::TrackedRun, emitter: &Emitter) -> Result<()> {
+    let mut updates = emitter.subscribe();
+    let requests = start_terminal_reader()?;
+    loop {
+        let snapshot = emitter.snapshot();
+        let Some((id, question)) = snapshot.nodes.iter().find_map(|(id, node)| {
+            matches!(node.status, TaskStatus::Waiting | TaskStatus::Running)
+                .then(|| {
+                    node.questions
+                        .iter()
+                        .find(|q| !q.closed && q.answer.is_none())
+                })
+                .flatten()
+                .map(|question| (id, question))
+        }) else {
+            let _ = updates.recv().await;
+            continue;
+        };
+
+        {
+            let mut stderr = io::stderr().lock();
+            writeln!(stderr, "  [{id}] ASK: {}", question.text)?;
+            if !question.options.is_empty() {
+                writeln!(stderr, "  Options: {}", question.options.join(" / "))?;
+            }
+            write!(stderr, "  Answer: ")?;
+            stderr.flush()?;
+        }
+        let (reply, mut answer) = tokio::sync::oneshot::channel();
+        requests
+            .send(reply)
+            .ok()
+            .context("terminal reader stopped")?;
+        loop {
+            tokio::select! {
+                value = &mut answer => {
+                    let line = value.context("terminal reader stopped")??;
+                    if line.is_empty() {
+                        return Ok(());
+                    }
+                    let text = line.trim();
+                    if !text.is_empty() {
+                        if let Err(e) = tracked.answer_question(emitter, id, Some(question.id), text, None) {
+                            eprintln!("  [{id}] {e}");
+                        }
+                    }
+                    break;
+                }
+                _ = updates.recv() => {
+                    let current = emitter.snapshot();
+                    let node = &current.nodes[id];
+                    let still_open = matches!(node.status, TaskStatus::Waiting | TaskStatus::Running)
+                        && node.questions.iter().any(|q| q.id == question.id && !q.closed && q.answer.is_none());
+                    if !still_open {
+                        eprintln!();
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
+type AnswerRequest = tokio::sync::oneshot::Sender<io::Result<String>>;
+
+fn start_terminal_reader() -> io::Result<std::sync::mpsc::Sender<AnswerRequest>> {
+    #[cfg(unix)]
+    let mut input = {
+        use std::os::fd::AsFd;
+        let stdin = io::stdin().as_fd().try_clone_to_owned()?;
+        io::BufReader::new(std::fs::File::from(stdin))
+    };
+    let (tx, requests) = std::sync::mpsc::channel::<AnswerRequest>();
+    // Detached from Tokio: a run can finish while the terminal still has
+    // an outstanding read. Dropping the reply receiver cancels that request.
+    std::thread::Builder::new()
+        .name("zori-terminal-input".into())
+        .spawn(move || {
+            for reply in requests {
+                #[cfg(unix)]
+                let result = read_terminal_line(&mut input, &reply);
+                #[cfg(not(unix))]
+                let result = {
+                    let mut line = String::new();
+                    io::stdin().read_line(&mut line).map(|_| line)
+                };
+                let _ = reply.send(result);
+            }
+        })?;
+    Ok(tx)
+}
+
+#[cfg(unix)]
+fn read_terminal_line(
+    input: &mut io::BufReader<std::fs::File>,
+    reply: &AnswerRequest,
+) -> io::Result<String> {
+    use std::io::BufRead;
+    use std::os::fd::AsRawFd;
+
+    // Poll before reading so a question that times out releases stdin for
+    // the next question even if the operator never presses Enter.
+    let mut fd = libc::pollfd {
+        fd: input.get_ref().as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    while input.buffer().is_empty() && !reply.is_closed() {
+        match unsafe { libc::poll(&mut fd, 1, 100) } {
+            0 => continue,
+            n if n > 0 => break,
+            _ => {
+                let err = io::Error::last_os_error();
+                if err.kind() != io::ErrorKind::Interrupted {
+                    return Err(err);
+                }
+            }
+        }
+    }
+    let mut line = String::new();
+    if !reply.is_closed() {
+        input.read_line(&mut line)?;
+    }
+    Ok(line)
 }
