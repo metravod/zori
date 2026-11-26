@@ -13,17 +13,16 @@ Zori is a Rust CLI and an embedded local web console. A YAML flow connects tasks
 
 ## Where it lives
 - [Public repository](https://github.com/metravod/zori), default branch main · how: gh repo view metravod/zori · seen 2026-11-26
-- [Release v0.3.0](https://github.com/metravod/zori/releases/tag/v0.3.0), four native archives and SHA256SUMS · how: gh release view v0.3.0 --repo metravod/zori · seen 2026-11-26
-- [Homebrew formula](https://github.com/metravod/homebrew-tap/blob/main/Formula/zori.rb), version 0.3.0 · how: gh api repos/metravod/homebrew-tap/contents/Formula/zori.rb · seen 2026-11-26
+- [Release v0.3.1](https://github.com/metravod/zori/releases/tag/v0.3.1), four native archives and SHA256SUMS · how: gh release view v0.3.1 --repo metravod/zori · seen 2026-11-26
+- [Homebrew formula](https://github.com/metravod/homebrew-tap/blob/main/Formula/zori.rb), version 0.3.1 · how: gh api repos/metravod/homebrew-tap/contents/Formula/zori.rb · seen 2026-11-26
 
 ## Now
-The embedded console shipped in [v0.3.0](https://github.com/metravod/zori/releases/tag/v0.3.0). All four archives passed checksum verification and Homebrew installed 0.3.0.
+[v0.3.1](https://github.com/metravod/zori/releases/tag/v0.3.1) shipped the themed timeline filters and Brief `optional` switch. All four archives matched SHA256SUMS, and Homebrew installed 0.3.1. [Browser and release verification](threads/checkbox-theme-restyle.md)
 Release history and the checks behind each feature are in the [log](log.md).
 **2026-11-25:** the built-in codex harness runs with `-s danger-full-access` (D15). Under `workspace-write` `.git` is read-only and the network is off, so headless codex could neither fetch nor commit. A live `zori run` codex task committed and reached GitHub, shipped in v0.2.3. Devin runs with `--permission-mode dangerous --respect-workspace-trust false` (personal store), OpenCode with `--auto` on first run and resume (v0.2.4); coddy has no rights switch and can do everything.
 **Verified 2026-11-26:** F1 (D13) is merged into main: the CLI and console drive `TrackedRun` and share its watchdog, questions and process spawn path; `zori run` retries, nudges and answers `ASK:` on a TTY, unattended with redirected stdin. Live coddy+opencode fan-out/join gave the same result under `zori run` and the console. [F1 verification](threads/f1-one-engine.md)
 **2026-11-26:** F2 is merged too: `src/runner/` (10 modules) and `src/ui/` (9 modules) split off their former 4931/3034-line files as a verified pure move. [review](threads/code-review-2026-11-24.md)
 **2026-11-26:** The embedded console now uses the live run API for its canvas, comparison, inbox and timeline. [Guide](../docs/guide.md)
-**2026-11-26:** The timeline filters and Brief `optional` switch passed browser review for v0.3.1. [Verification](threads/checkbox-theme-restyle.md)
 **Verified 2026-11-25:** v0.2.4 released (OpenCode `--auto`; v0.2.3 brought codex `danger-full-access`): [release run](https://github.com/metravod/zori/actions/runs/45686074730) green on all four targets, all archives match SHA256SUMS, the macOS arm64 archive reports `zori 0.2.4`; after the [tap update](https://github.com/metravod/homebrew-tap/actions/runs/45687587060) `brew upgrade` installed 0.2.4. Earlier releases passed the same bar.
 **Verified 2026-11-22:** harnesses resolve built-in → `~/.zori/harnesses.yml` → a flow's `harnesses:` block everywhere (CLI listings, console picker, Fleet, planner brief); the ⚓ Fleet stores harness/model pairs in `~/.zori/fleet.json`; workflow skills live in `~/.zori/skills/` (D10, D11). See the [guide](../docs/guide.md#adding-a-harness-the-personal-store).
 **Verified 2026-11-22:** planner chats run in the chosen project folder and proposals merge onto a live canvas (layered tests, no live browser session). See [combined verification](threads/planner-canvas-verification.md).

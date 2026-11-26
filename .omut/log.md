@@ -1,6 +1,6 @@
 # Log
 
-- 2026-11-26 · codex/GPT-6 · Reviewed the console controls, fixed contrast, forced colors and zoom layout, and prepared v0.3.1 → [verification](threads/checkbox-theme-restyle.md)
+- 2026-11-26 · codex/GPT-6 · Reviewed the console controls, fixed contrast, forced colors and zoom layout, and shipped v0.3.1. Verified all four archive digests and the Homebrew upgrade → [verification](threads/checkbox-theme-restyle.md)
 - 2026-11-26 · opencode/GLM-5.3 · restyled the last two native checkboxes on `checkbox-theme-restyle` (fb370f4, not pushed, awaiting review): timeline filters as theme-painted 14px boxes (mask-drawn check glyph from icons.js), the Brief `optional` flag as a `.ck.sw` cyan switch; one JS class, no logic; grep invariants + 64 web cases green → [thread](threads/checkbox-theme-restyle.md)
 
 - 2026-11-26 · codex/GPT-6 · Released v0.3.0, verified Compare in Chromium, four archive checksums and the Homebrew upgrade from 0.2.4 → [release build](https://github.com/metravod/zori/actions/runs/45846976784), [tap update](https://github.com/metravod/homebrew-tap/actions/runs/45848018604)
