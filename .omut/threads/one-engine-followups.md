@@ -28,6 +28,6 @@ project-meta edits made in that clone are lost too.
 - `web/index.html` split — deferred, tied to D14 ([thread](console-ui-redesign.md)).
 - Three rustdoc link warnings on private items (seen on the lost branch).
 
-**Merged 2026-11-26:** F1+F2 fast-forwarded into main after a live re-check ([F1](f1-one-engine.md)); not yet released.
+**Merged 2026-11-26:** F1+F2 fast-forwarded into main after a live re-check ([F1](f1-one-engine.md)); shipped in v0.3.0.
 
-**Next step:** release F1+F2, redo F4 on main, close the deferred review items.
+**Next step:** redo F4 on main, close the deferred review items.
