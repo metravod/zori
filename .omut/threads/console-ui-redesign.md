@@ -1,7 +1,7 @@
 ---
 status: active
-updated: 2026-11-25
-by: devin/opus-5.5
+updated: 2026-11-26
+by: coddy/qwen3.8-flash-next-ru
 ---
 # Console UI redesign: from config editor to supervision surface
 
@@ -24,3 +24,26 @@ by: devin/opus-5.5
 **Not verified:** Whether the run/state API already exposes timings, token counts and last activity per attempt for items 1 and 3.
 **Open:** D14 (front-end foundation) gates items 1–5. The owner is trying an external UI generator on a mock-up prompt first.
 **Next step:** Decide D14, then build a compare-view mock-up against a real fan-out run (e.g. `omut-review`).
+
+## 2026-11-26: layout mockup (branch `feature/console-ui-mockup`, from main)
+
+`ui-mockup/` in the repo root — a static mockup of the overall layout from the
+owner's two references: left sidebar (run history, saved pipelines), center
+(run header with the agent's pending question, DAG with statuses, agent cards
+showing time/calls/cost/tokens and per-node actions, Gantt timeline with
+retry segments and watchdog-nudge ticks), right column (attention inbox:
+question / failed / approval with actions, final report with "use as result").
+Clicking an agent card swaps the right column to the agent detail: collapsible
+tool-call/reasoning items, file-edit diff, final report, steer box.
+
+It is deliberately built as **native ES modules, no bundler, no dependencies**
+(D14 option A in practice) and is not embedded in the binary — only
+`web/index.html` is (`include_str!` in `src/ui.rs`). Fake data in
+`ui-mockup/data.js`, shaped like a run/state API payload.
+
+**Owner clicks it and decides D14.** If option A holds: port the mockup's
+module split into `web/` and wire it to the real API, then item 1 (compare
+view) and item 3 (live cards) land on that skeleton. If a framework wins, the
+mockup still fixes the layout contract; the data.js shapes transfer as-is.
+**Still open:** whether run/state exposes per-attempt timings, cost/tokens and
+last activity (the mockup assumes it does).
