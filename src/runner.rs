@@ -55,7 +55,7 @@ use groups::{GroupRegistration, install_death_handlers};
 use paths::{RunArtifacts, dry_preview};
 #[cfg(test)]
 use paths::project_dir_of;
-use planning::{HEARTBEAT_SECS, flow_default_timeout, render_argv, supervision_settings, timeout_for};
+use planning::{HEARTBEAT_SECS, LIVE_SECS, flow_default_timeout, render_argv, supervision_settings, timeout_for};
 #[cfg(test)]
 use planning::DEFAULT_TIMEOUT_SECS;
 use prompt::{PromptCtx, missing_output, render_prompt, skill_block};

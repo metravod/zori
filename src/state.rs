@@ -134,6 +134,9 @@ pub struct Progress {
     pub bytes: usize,
     pub lines: usize,
     pub elapsed_secs: u64,
+    /// The newest human-readable output line (the card's live activity).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub activity: String,
 }
 
 /// A question stays in the snapshot after delivery, timeout, or restart.
@@ -212,6 +215,18 @@ pub struct FlowProposal {
     pub ts: u64,
 }
 
+/// One stretch of a node in `Running`, for the console's timeline. Opened and
+/// closed centrally in [`Emitter::mutate`] on every status transition, so
+/// first runs, retries, reruns and steers all show up without bookkeeping at
+/// each call site.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AttemptSpan {
+    pub started_at: u64,
+    pub ended_at: Option<u64>,
+    /// The status the span ended in (`done`, `failed`, `waiting`, …).
+    pub status: Option<String>,
+}
+
 /// One DAG node: its identity, status, session handle, transcript and result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskNode {
@@ -247,6 +262,11 @@ pub struct TaskNode {
     /// Run click is the only thing that boots it. `None` = nothing proposed.
     #[serde(default)]
     pub proposal: Option<FlowProposal>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attempts: Vec<AttemptSpan>,
+    /// Unix seconds of each watchdog intervention (nudge, retry, extension).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub nudges: Vec<u64>,
 }
 
 impl TaskNode {
@@ -270,6 +290,8 @@ impl TaskNode {
             ask: None,
             questions: Vec::new(),
             proposal: None,
+            attempts: Vec::new(),
+            nudges: Vec::new(),
         }
     }
 }
@@ -448,7 +470,24 @@ impl Emitter {
     /// lock is held, so keep it cheap.
     pub fn mutate<F: FnOnce(&mut RunState)>(&self, f: F) {
         let mut st = self.state.lock().unwrap();
+        let before: Vec<(String, TaskStatus)> = st.nodes.iter().map(|(id, n)| (id.clone(), n.status)).collect();
         f(&mut st);
+        let now = now_secs();
+        for (id, was) in before {
+            let Some(n) = st.nodes.get_mut(&id) else { continue };
+            if n.status == was {
+                continue;
+            }
+            if was == TaskStatus::Running {
+                if let Some(a) = n.attempts.last_mut().filter(|a| a.ended_at.is_none()) {
+                    a.ended_at = Some(now);
+                    a.status = Some(n.status.label().to_string());
+                }
+            }
+            if n.status == TaskStatus::Running {
+                n.attempts.push(AttemptSpan { started_at: now, ended_at: None, status: None });
+            }
+        }
         st.recompute_status();
         st.updated_at = now_secs();
         // A broadcast error only means there are no subscribers right now;
@@ -570,6 +609,24 @@ mod tests {
         assert_eq!(snap.nodes["a"].turns.len(), 1);
         assert_eq!(snap.nodes["a"].turns[0].role, Role::Human);
         assert_eq!(snap.nodes["a"].turns[0].text, "clarify X");
+    }
+
+    // The console's timeline reads attempt spans straight from the snapshot:
+    // every entry into Running opens one, every exit closes it with the
+    // status it ended in, whichever code path flipped the status.
+    #[test]
+    fn status_transitions_record_attempt_spans() {
+        let em = Emitter::new(state());
+        em.set_status("a", TaskStatus::Running);
+        em.set_status("a", TaskStatus::Failed);
+        em.mutate(|st| st.nodes.get_mut("a").unwrap().status = TaskStatus::Running);
+        let spans = em.snapshot().nodes["a"].attempts.clone();
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].status.as_deref(), Some("failed"));
+        assert!(spans[0].ended_at.is_some());
+        assert_eq!(spans[1].ended_at, None, "the live attempt stays open");
+        em.set_status("a", TaskStatus::Done);
+        assert_eq!(em.snapshot().nodes["a"].attempts[1].status.as_deref(), Some("done"));
     }
 
     #[test]

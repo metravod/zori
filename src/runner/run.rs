@@ -718,6 +718,7 @@ impl TrackedRun {
     fn watchdog_note(emitter: &Emitter, id: &str, text: String) {
         emitter.emit(RunEvent::Watchdog(id, &text));
         emitter.append_turn(id, Role::System, text);
+        emitter.mutate(|st| if let Some(n) = st.nodes.get_mut(id) { n.nudges.push(now_secs()) });
     }
 
     /// The propose→validate→(fix) gate, run once when a chat node's turn is

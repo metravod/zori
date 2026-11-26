@@ -19,6 +19,8 @@ pub(super) fn timeout_for(task: &Task, flow_default_secs: u64) -> Duration {
 /// dead for minutes (the first real run hung on a deadlock and looked the same
 /// as one that was merely slow) is impossible to tell apart without this.
 pub(super) const HEARTBEAT_SECS: u64 = 30;
+/// How often a running node's progress reaches the console (no terminal line).
+pub(super) const LIVE_SECS: u64 = 3;
 
 /// Build the execution plan for a flow, surfacing DAG errors as `anyhow`.
 pub fn plan(flow: &Flow) -> Result<ExecutionPlan> {

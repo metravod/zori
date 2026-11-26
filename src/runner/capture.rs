@@ -7,6 +7,7 @@ struct SharedBuf {
     text: Arc<StdMutex<String>>,
     nbytes: Arc<AtomicUsize>,
     nlines: Arc<AtomicUsize>,
+    last: Arc<StdMutex<String>>,
 }
 
 impl SharedBuf {
@@ -16,6 +17,12 @@ impl SharedBuf {
         let mut g = self.text.lock().unwrap();
         g.push_str(line);
         g.push('\n');
+        if !line.trim().is_empty() {
+            *self.last.lock().unwrap() = line.trim().chars().take(160).collect();
+        }
+    }
+    fn last(&self) -> String {
+        self.last.lock().unwrap().clone()
     }
     fn bytes(&self) -> usize {
         self.nbytes.load(Ordering::Relaxed)
@@ -158,15 +165,28 @@ pub(super) async fn spawn_captured(
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     ticker.tick().await;
 
+    // The card's live line: the newest human-readable output, preferring
+    // stdout unless it is a JSON event stream (codex, opencode).
+    let activity_line = || {
+        let out = out_buf.last();
+        if out.is_empty() || out.starts_with('{') { err_buf.last() } else { out }
+    };
     let push_progress = |bytes: usize, lines: usize, secs: u64| {
+        let last = activity_line();
         emitter.mutate(|st| {
             if let Some(n) = st.nodes.get_mut(node_id) {
                 n.progress.bytes = bytes;
                 n.progress.lines = lines;
                 n.progress.elapsed_secs = secs;
+                if !last.is_empty() {
+                    n.progress.activity = last.clone();
+                }
             }
         });
     };
+    let mut live = tokio::time::interval(Duration::from_secs(LIVE_SECS));
+    live.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    live.tick().await;
 
     let mut exit_res: Option<std::io::Result<std::process::ExitStatus>> = None;
     while !timed_out {
@@ -180,6 +200,7 @@ pub(super) async fn spawn_captured(
                     let note = format!("[watchdog] {reason}. Deadline extended by 10 minutes.");
                     emitter.emit(RunEvent::Notice(node_id, &note));
                     emitter.append_turn(node_id, Role::System, note);
+                    emitter.mutate(|st| if let Some(n) = st.nodes.get_mut(node_id) { n.nudges.push(now_secs()) });
                 } else {
                     timed_out = true;
                 }
@@ -188,6 +209,9 @@ pub(super) async fn spawn_captured(
                 let secs = start.elapsed().as_secs();
                 emitter.emit(RunEvent::Progress(node_id, secs, out_buf.bytes()));
                 push_progress(out_buf.bytes(), out_buf.lines(), secs);
+            }
+            _ = live.tick() => {
+                push_progress(out_buf.bytes(), out_buf.lines(), start.elapsed().as_secs());
             }
         }
     }
