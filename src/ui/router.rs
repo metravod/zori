@@ -1,7 +1,20 @@
 use super::*;
 
-/// The single-file SPA, embedded so the binary has no runtime asset dir.
+/// The console: native ES modules with no build step, embedded so the binary
+/// has no runtime asset dir. `ZORI_WEB_DIR` serves them from disk instead
+/// (front-end development without a rebuild).
 const INDEX_HTML: &str = include_str!("../../web/index.html");
+const WEB_FILES: &[(&str, &str)] = &[
+    ("app.js", include_str!("../../web/app.js")),
+    ("canvas.js", include_str!("../../web/canvas.js")),
+    ("graph.js", include_str!("../../web/graph.js")),
+    ("icons.js", include_str!("../../web/icons.js")),
+    ("md.js", include_str!("../../web/md.js")),
+    ("panels.js", include_str!("../../web/panels.js")),
+    ("store.js", include_str!("../../web/store.js")),
+    ("styles.css", include_str!("../../web/styles.css")),
+    ("vendor/preact-htm.js", include_str!("../../web/vendor/preact-htm.js")),
+];
 
 /// Bind a console server and serve it. `initial_flow`, when given, is booted as
 /// the first run so the browser has something to show immediately. Prints the
@@ -57,6 +70,7 @@ pub async fn start(
 fn build_router(state: std::sync::Arc<AppState>) -> Router {
     Router::new()
         .route("/", get(index))
+        .route("/web/*file", get(web_file))
         .route("/api/chats", post(start_chat))
         .route("/api/runs", get(list_runs).post(boot))
         .route("/api/runs/:id", get(get_run))
@@ -93,7 +107,22 @@ fn build_router(state: std::sync::Arc<AppState>) -> Router {
 // --------------------------------------------------------------------------
 
 async fn index() -> impl IntoResponse {
-    ([(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")], INDEX_HTML)
+    let body = dev_file("index.html").unwrap_or_else(|| INDEX_HTML.to_string());
+    ([(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")], body)
+}
+
+fn dev_file(name: &str) -> Option<String> {
+    let dir = std::env::var_os("ZORI_WEB_DIR")?;
+    std::fs::read_to_string(std::path::Path::new(&dir).join(name)).ok()
+}
+
+async fn web_file(AxPath(file): AxPath<String>) -> axum::response::Response {
+    let Some((name, embedded)) = WEB_FILES.iter().find(|(name, _)| *name == file) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let body = dev_file(&file).unwrap_or_else(|| embedded.to_string());
+    let kind = if name.ends_with(".css") { "text/css; charset=utf-8" } else { "text/javascript; charset=utf-8" };
+    ([(axum::http::header::CONTENT_TYPE, kind), (axum::http::header::CACHE_CONTROL, "no-cache")], body).into_response()
 }
 
 async fn shutdown_signal() {

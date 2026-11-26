@@ -3,6 +3,10 @@ status: active
 updated: 2026-11-26
 by: coddy/qwen3.8-flash-next-ru
 ---
+## Migration update, 2026-11-26
+
+The prototype now ships from `web/` with live API data and graph editing under the amended D12. See the [guide](../../docs/guide.md). Browser verification with real planner agents remains in the [console verification thread](console-verification.md).
+
 # Console UI redesign: from config editor to supervision surface
 
 **Goal:** Make the console serve zori's "why" — comparing how several agents handle one brief and supervising them — instead of being a form-driven DAG editor. Agents make "control panel" UI (forms, selects, manual wiring) less needed; they make supervision and judgment UI (see many parallel things, compare, decide, intervene) more needed.

@@ -49,6 +49,7 @@ zori run examples/fanout-review.yml --input prompt="Review the uncommitted diff"
 ## Work with a running flow
 
 - Set `max_parallel` to cap concurrent tasks. A failed task skips its dependents. Mark a branch `optional: true` to let a join proceed with the other reports.
+- Drag a harness and model from **Fleet** onto the canvas, connect its output to another card, and launch the flow. Open **Compare** to read sibling outputs side by side or **Timeline** to inspect their attempts.
 - Open a task on the console canvas to inspect its transcript or continue its agent session. A changed reply marks downstream results stale so you can rerun them.
 - The planner can propose a flow in chat. Zori validates the proposal and shows its graph for you to accept or reject before launch.
 - Each run records prompts, outputs and attempt metadata under `zori-runs/`. Keep these files local when they contain private project material. The console binds to loopback and has no authentication. Run trusted flows and skills with the permissions you intend to give their commands.

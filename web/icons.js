@@ -34,11 +34,17 @@ export const Icon = ({ n, s = 14, w = 1.8, cls = '' }) => html`<svg class=${'ic 
 
 export const STATUS = {
   done: { label: 'done', icon: 'check' }, running: { label: 'running', icon: 'ring' }, failed: { label: 'failed', icon: 'x' },
-  stale: { label: 'stale', icon: 'clock' }, waiting: { label: 'waiting', icon: 'pause' }, pending: { label: 'queued', icon: 'clock' },
+  stale: { label: 'stale', icon: 'clock' }, waiting: { label: 'waiting', icon: 'pause' }, pending: { label: 'pending', icon: 'clock' },
   draft: { label: 'draft', icon: 'plus' }, skipped: { label: 'skipped', icon: 'minus' },
 };
+export const nowSecs = () => Math.floor(Date.now() / 1000);
+// Seconds a node has spent running, across all its attempts.
+export function runSecs(n) {
+  if (n.attempts?.length) return n.attempts.reduce((a, s) => a + ((s.ended_at ?? nowSecs()) - s.started_at), 0);
+  if (!n.started_at) return 0;
+  return (n.finished_at && n.finished_at >= n.started_at ? n.finished_at : nowSecs()) - n.started_at;
+}
+export const size = (b) => (!b ? '0 B' : b < 1024 ? `${b} B` : b < 1048576 ? `${(b / 1024).toFixed(1)} KB` : `${(b / 1048576).toFixed(1)} MB`);
+export const firstLine = (s) => (s || '').split('\n').map((l) => l.trim()).find(Boolean) || '';
 export const dur = (s) => (s == null || s <= 0 ? '—' : s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`);
 export const clock = (s) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
-export const money = (c) => `$${(c || 0).toFixed(2)}`;
-export const tok = (t) => (t >= 1000 ? `${(t / 1000).toFixed(1)}k` : `${t || 0}`);
-export const md = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/`(.+?)`/g, '<code>$1</code>');

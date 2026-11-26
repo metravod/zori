@@ -1,18 +1,7 @@
 // Test for the console's markdown renderer.
 //
-// The SPA is one embedded file with no build step, so the renderer is read out
-// of web/index.html between its MD markers and evaluated here rather than
-// duplicated into a module. Run: node web/md.test.mjs
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
-
-const here = dirname(fileURLToPath(import.meta.url));
-const html = readFileSync(join(here, 'index.html'), 'utf8');
-const m = /\/\*MD-START\*\/([\s\S]*?)\/\*MD-END\*\//.exec(html);
-if (!m) { console.error('FAIL: MD markers not found in index.html'); process.exit(1); }
-
-const MD = eval(m[1] + '\nMD;');
+// Run: node web/md.test.mjs
+import MD from './md.js';
 
 let failed = 0, passed = 0;
 function check(name, input, expect) {
