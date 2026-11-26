@@ -18,6 +18,8 @@
 //!   POST /api/runs/:id/answer {node,text}   answer a Waiting node's parked question
 //!   POST /api/runs/:id/rerun  {node}        re-run a node from scratch
 //!   POST /api/runs/:id/rerun-stale          re-run every Stale node
+//!   POST /api/runs/:id/patch  {add,wire,unwire,remove,pos}  edit a live graph
+//!   GET  /api/runs/:id/flow                 the run's effective flow spec
 //!
 //! Flow-builder endpoints (the "Build" tab of the SPA — click a pipeline
 //! together instead of hand-writing YAML; the server is the single authority
@@ -69,7 +71,7 @@ mod state;
 
 use catalog::{get_fleet, harness_models, harnesses, list_flows, list_skills, open_flow, planner_catalog, put_fleet};
 use chat::{planner_run_context, start_chat};
-use control::{BootReq, answer, boot_flow, epoch_secs, rerun, rerun_stale, slug, steer};
+use control::{BootReq, answer, boot_flow, epoch_secs, patch_graph, rerun, rerun_stale, run_flow, slug, steer};
 use guard::{AllowedHosts, boundary_guard};
 use proposal::{reject_proposal, run_proposal};
 use runs::{boot, events, get_run, list_runs, load_existing_runs, spawn_persister, transcript};

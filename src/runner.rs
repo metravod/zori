@@ -38,6 +38,7 @@ use crate::watchdog::{Attempt, Settings, Verdict};
 mod capture;
 mod env;
 mod exec;
+mod graph;
 mod groups;
 mod paths;
 mod planning;
@@ -63,6 +64,7 @@ use prompt::interpolate;
 use questions::{publish_questions, question_status, question_verdict};
 use util::{new_coddy_session_id, now_secs};
 pub use run::TrackedRun;
+pub use graph::GraphPatch;
 pub(crate) use paths::effective_cwd;
 pub(crate) use prompt::canvas_prompt;
 

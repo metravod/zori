@@ -417,6 +417,53 @@ pub(super) async fn rerun_stale(
     Ok(Json(ack))
 }
 
+/// Edit a live run's graph (D12 as amended): add nodes, wire/unwire, remove,
+/// move. Added nodes launch as soon as their inputs settle. The run's flow is
+/// written to `<run dir>/flow.yml` (never back into a saved pipeline), so a
+/// restart reloads the edited graph.
+pub(super) async fn patch_graph(
+    State(state): State<std::sync::Arc<AppState>>,
+    AxPath(id): AxPath<String>,
+    Json(patch): Json<crate::runner::GraphPatch>,
+) -> Result<Json<RunState>, ApiError> {
+    let m = lookup(&state, &id)?;
+    if m.emitter.snapshot().is_chat {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "a planner chat has no editable graph".into()));
+    }
+    let added = m
+        .tracked
+        .apply_patch(&m.emitter, &patch)
+        .map_err(|msg| ApiError(StatusCode::CONFLICT, msg))?;
+    if !patch.is_empty() {
+        persist_run_flow(&m);
+    }
+    for node in added {
+        let (tracked, emitter) = (m.tracked.clone(), m.emitter.clone());
+        tokio::spawn(async move { tracked.launch(&emitter, &node).await });
+    }
+    Ok(Json(m.emitter.snapshot()))
+}
+
+/// The run's flow as it runs now (boot spec plus edits and fixes).
+pub(super) async fn run_flow(
+    State(state): State<std::sync::Arc<AppState>>,
+    AxPath(id): AxPath<String>,
+) -> Result<Json<Flow>, ApiError> {
+    Ok(Json(lookup(&state, &id)?.tracked.effective_flow()))
+}
+
+fn persist_run_flow(m: &RunHandle) {
+    let Some(dir) = m.emitter.snapshot().out_dir else { return };
+    let path = dir.join("flow.yml");
+    let written = spec_to_yaml(&m.tracked.effective_flow())
+        .map_err(|e| e.1)
+        .and_then(|yaml| std::fs::write(&path, yaml).map_err(|e| format!("writing {}: {e}", path.display())));
+    match written {
+        Ok(()) => m.emitter.mutate(|st| st.flow_path = path.clone()),
+        Err(e) => eprintln!("warning: could not persist the edited graph: {e}"),
+    }
+}
+
 // --------------------------------------------------------------------------
 // Flow builder
 // --------------------------------------------------------------------------

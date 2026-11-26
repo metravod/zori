@@ -25,7 +25,7 @@ pub struct TrackedRun {
     /// fields (model, prompt, out, cwd, timeout, args, env, optional) but not
     /// ids or edges. Behind an `Arc` so every clone of the driver (each level
     /// runner holds one) sees the same corrections.
-    overrides: Arc<std::sync::RwLock<HashMap<String, Task>>>,
+    pub(super) overrides: Arc<std::sync::RwLock<HashMap<String, Task>>>,
     /// Wakes waiters after an addressed answer is committed to the snapshot.
     answers: Arc<tokio::sync::Notify>,
     operator_input_closed: Arc<AtomicBool>,
@@ -39,6 +39,8 @@ pub struct TrackedRun {
     /// returned) all see the same latest board. `None` until a turn carries
     /// one; only the chat planner populates it.
     pub(super) canvas: Arc<StdMutex<Option<serde_json::Value>>>,
+    /// Live graph edits since boot (nodes added or removed by the operator).
+    pub(super) topology: Arc<std::sync::RwLock<super::graph::Topology>>,
 }
 
 impl TrackedRun {
@@ -83,6 +85,7 @@ impl TrackedRun {
             operator_input_closed: Arc::new(AtomicBool::new(false)),
             unattended: false,
             canvas: Arc::new(StdMutex::new(None)),
+            topology: Default::default(),
         })
     }
 
@@ -103,10 +106,14 @@ impl TrackedRun {
     /// rerun, rerun-stale) resolves through here, so a fix applied between
     /// attempts is never silently lost.
     pub fn task(&self, id: &str) -> Option<Task> {
+        if self.is_removed(id) {
+            return None;
+        }
         if let Some(t) = self.overrides.read().expect("overrides lock").get(id) {
             return Some(t.clone());
         }
-        self.flow.tasks.iter().find(|t| t.id == id).cloned()
+        let topo = self.topology.read().expect("topology lock");
+        topo.added.iter().chain(self.flow.tasks.iter()).find(|t| t.id == id).cloned()
     }
 
     /// Register an operator edit for the task with this id (which must already
@@ -121,13 +128,8 @@ impl TrackedRun {
     /// The flow as it runs now (boot spec with all edits applied) — the shape
     /// to persist, so a reloaded run keeps the fixes.
     pub fn effective_flow(&self) -> Flow {
-        let ov = self.overrides.read().expect("overrides lock");
         let mut f = self.flow.clone();
-        for t in f.tasks.iter_mut() {
-            if let Some(new) = ov.get(&t.id) {
-                *t = new.clone();
-            }
-        }
+        f.tasks = self.tasks();
         f
     }
 
@@ -205,9 +207,12 @@ impl TrackedRun {
             // Determine skips before spawning any siblings.
             let mut runnable: Vec<Task> = Vec::new();
             for id in level {
-                let task = self.task(id).unwrap_or_else(|| {
-                    panic!("task '{id}' is in the plan but missing from the flow")
-                });
+                if self.is_removed(id) {
+                    continue;
+                }
+                // A dependency wired in live may still be working.
+                self.wait_deps_settled(emitter, id).await;
+                let Some(task) = self.task(id) else { continue };
                 if self.blocked(emitter, &task) {
                     emitter.emit(RunEvent::Finished(id, TaskStatus::Skipped, "(a dependency did not complete)"));
                     let blockers = self.blocker_names(emitter, &task);
@@ -262,7 +267,7 @@ impl TrackedRun {
     /// spawns, and shared by every sibling (see [`ExecMode::FirstRun`]).
     /// Returns only when every node of the level is terminal — the level
     /// barrier (D3).
-    async fn run_level(&self, emitter: &Emitter, nodes: Vec<Task>, first_pass: bool) {
+    pub(super) async fn run_level(&self, emitter: &Emitter, nodes: Vec<Task>, first_pass: bool) {
         if nodes.is_empty() {
             return;
         }
@@ -496,7 +501,7 @@ impl TrackedRun {
     /// they run concurrently under the same `max_parallel` cap as a first
     /// run; the level barrier keeps the refresh order honest.
     pub async fn rerun_stale(&self, emitter: &Emitter) {
-        for level in &self.plan.levels {
+        for level in &self.live_levels() {
             let stale_ids: Vec<String> = level
                 .iter()
                 .filter(|id| {
@@ -564,11 +569,12 @@ impl TrackedRun {
 
     /// Mark transitive dependents of `id` `Stale` if they were `Done`. Running or
     /// already-terminal-but-not-Done nodes are left alone.
-    fn mark_downstream_stale(&self, emitter: &Emitter, id: &str) {
+    pub(super) fn mark_downstream_stale(&self, emitter: &Emitter, id: &str) {
         let mut frontier = vec![id.to_string()];
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let tasks = self.tasks();
         while let Some(cur) = frontier.pop() {
-            for t in &self.flow.tasks {
+            for t in &tasks {
                 if !t.depends_on.iter().any(|d| d == &cur) {
                     continue;
                 }

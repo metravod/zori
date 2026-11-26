@@ -653,3 +653,91 @@ fn chat_flow_with_a_folder_sets_cwd_and_workspace_flow() {
     assert_eq!(proc_cwd, dir.canonicalize().unwrap());
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// D12 as amended: a live run's graph is editable like opening sessions by
+// hand. A node added mid-run launches by itself, a pending node wired to it
+// waits for it (instead of being skipped), cycles and duplicates are refused,
+// removing an input turns a finished consumer Stale, and the edited graph is
+// persisted beside the run, never into the saved pipeline.
+#[tokio::test]
+async fn live_patch_adds_wires_and_removes_nodes() {
+    let dir = std::env::temp_dir().join(crate::artifacts::new_run_id("live-patch"));
+    let flows = dir.join("flows");
+    std::fs::create_dir_all(&flows).unwrap();
+    let state = Arc::new(AppState {
+        runs: Mutex::default(),
+        runs_root: dir.join("runs"),
+        flows_root: flows.clone(),
+        models_cache: Mutex::default(),
+        allowed_hosts: AllowedHosts::for_bind("127.0.0.1:8787".parse().unwrap()),
+    });
+    let mut flow = spec(r#"
+name: live
+default_timeout_secs: 8
+watchdog: {retry: 0, nudges: 0, ask: false}
+harnesses:
+  probe:
+    command: [sh, -c, 'while test ! -f "$2"; do sleep 0.02; done; echo result-"$2"', probe]
+    model_flag: --model
+    prompt_via: stdin
+tasks:
+  - {id: producer, harness: probe, model: gate, in: produce}
+  - {id: join, harness: echo, in: summarize, depends_on: [producer]}
+"#);
+    for task in &mut flow.tasks {
+        task.cwd = Some(dir.clone());
+    }
+    let yaml = spec_to_yaml(&flow).unwrap();
+    let path = flows.join("live.yml");
+    std::fs::write(&path, &yaml).unwrap();
+    let run = boot_flow(state.clone(), &yaml, Some(path.clone()), vec![], None).await.unwrap();
+    let m = lookup(&state, &run).unwrap();
+    let status = |id: &str| m.emitter.snapshot().nodes.get(id).map(|n| n.status);
+    let wait_for = |id: &'static str, wanted| async move {
+        tokio::time::timeout(std::time::Duration::from_secs(6), async {
+            while status(id) != Some(wanted) {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        }).await.unwrap_or_else(|_| panic!("{id} did not reach {wanted:?}"));
+    };
+    let patch = |v: serde_json::Value| {
+        let state = state.clone();
+        let run = run.clone();
+        async move { patch_graph(State(state), AxPath(run), Json(serde_json::from_value(v).unwrap())).await }
+    };
+    wait_for("producer", TaskStatus::Running).await;
+
+    let _ack = patch(json!({
+        "add": [{"id": "extra", "harness": "echo", "in": "extra-brief", "pos": {"x": 300.0, "y": 0.0}}],
+        "wire": [["extra", "join"]],
+    })).await.unwrap();
+    wait_for("extra", TaskStatus::Done).await;
+    assert_eq!(status("join"), Some(TaskStatus::Pending), "join waits for its live-wired input");
+    assert!(m.emitter.snapshot().levels.concat().contains(&"extra".to_string()));
+
+    let dup = patch(json!({"add": [{"id": "extra", "harness": "echo", "in": "x"}]})).await.unwrap_err();
+    assert_eq!(dup.0, StatusCode::CONFLICT);
+    let bad = patch(json!({"add": [{"id": "ghost", "harness": "no-such-cli", "in": "x"}]})).await.unwrap_err();
+    assert_eq!(bad.0, StatusCode::CONFLICT);
+    let busy = patch(json!({"remove": ["producer"]})).await.unwrap_err();
+    assert_eq!(busy.0, StatusCode::CONFLICT, "a working node cannot be removed");
+
+    std::fs::write(dir.join("gate"), "").unwrap();
+    wait_for("join", TaskStatus::Done).await;
+    let out = m.emitter.snapshot().nodes["join"].output.clone();
+    assert!(out.contains("result-gate") && out.contains("extra-brief"), "{out}");
+
+    let cycle = patch(json!({"wire": [["join", "extra"]]})).await.unwrap_err();
+    assert_eq!(cycle.0, StatusCode::CONFLICT);
+    let _ack = patch(json!({"remove": ["extra"]})).await.unwrap();
+    assert_eq!(status("extra"), None);
+    assert_eq!(status("join"), Some(TaskStatus::Stale), "a finished consumer of a removed input is stale");
+    assert_eq!(m.emitter.snapshot().nodes["join"].depends_on, vec!["producer".to_string()]);
+
+    let snap = m.emitter.snapshot();
+    assert!(snap.flow_path.starts_with(snap.out_dir.as_ref().unwrap()), "persisted beside the run");
+    let saved = spec(&std::fs::read_to_string(&snap.flow_path).unwrap());
+    assert_eq!(saved.tasks.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["producer", "join"]);
+    assert_eq!(spec(&std::fs::read_to_string(&path).unwrap()).tasks.len(), 2, "the saved pipeline is untouched");
+    std::fs::remove_dir_all(dir).unwrap();
+}

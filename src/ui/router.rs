@@ -66,6 +66,8 @@ fn build_router(state: std::sync::Arc<AppState>) -> Router {
         .route("/api/runs/:id/answer", post(answer))
         .route("/api/runs/:id/rerun", post(rerun))
         .route("/api/runs/:id/rerun-stale", post(rerun_stale))
+        .route("/api/runs/:id/patch", post(patch_graph))
+        .route("/api/runs/:id/flow", get(run_flow))
         .route("/api/runs/:id/run-proposal", post(run_proposal))
         .route("/api/runs/:id/reject-proposal", post(reject_proposal))
         .route("/api/catalog", get(planner_catalog))
