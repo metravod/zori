@@ -1,5 +1,7 @@
 # Log
 
+- 2026-11-26 · opencode/GLM-5.3 · restyled the last two native checkboxes on `checkbox-theme-restyle` (fb370f4, not pushed, awaiting review): timeline filters as theme-painted 14px boxes (mask-drawn check glyph from icons.js), the Brief `optional` flag as a `.ck.sw` cyan switch; one JS class, no logic; grep invariants + 64 web cases green → [thread](threads/checkbox-theme-restyle.md)
+
 - 2026-11-26 · codex/GPT-6 · Released v0.3.0, verified Compare in Chromium, four archive checksums and the Homebrew upgrade from 0.2.4 → [release build](https://github.com/metravod/zori/actions/runs/45846976784), [tap update](https://github.com/metravod/homebrew-tap/actions/runs/45848018604)
 - 2026-11-26 · codex/GPT-6 · Integrated the embedded console and updated its usage guide for 0.3.0 → [guide](../docs/guide.md)
 - 2026-11-26 · devin/opus-5.5 · console prototype v2 on `feature/console-ui-mockup` (rebased on main): IDE-style tool windows around a live canvas, Image-2 cards, drag harness·model from Fleet → node, wires pulled on the canvas, ⌘K, Compare, planner proposals, inbox; Preact+htm vendored, no npm (D14 accepted); CDP-driven headless Chrome checks, no console errors. Open: D12 forbids add-node on a live run → [thread](threads/console-ui-redesign.md)
