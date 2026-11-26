@@ -16,6 +16,12 @@ lost unmerged the same day ([follow-ups](one-engine-followups.md)); the
 "done" below describes the lost work, not main:
 
 **Current F1:** redone on local branch `refactor/one-engine` based on ba7ef62. The [F1 thread](f1-one-engine.md) records current verification.
+**Current F2:** redone on the same branch (ccf21f6, 2026-11-26): `src/runner/`
+  has 10 modules + 2 test files, `src/ui/` 9 modules + the ui_tests file, as a
+  pure move verified by a content-line multiset (0 lost / 0 gained, modulo
+  `pub(super)` visibility bumps, the test-body dedent and structural lines).
+  Both former files are 4931/3034 lines; `run.rs` (1301) and `control.rs`
+  (715) are the largest pieces left. 214 unit + 3 CLI tests, clippy clean.
 
 - **F1 — done** (67d351d, review fixes 7013642). `zori run` and the console
   drive `TrackedRun::run_all`; `runner::run`, `run_task` and `spawn_captured`

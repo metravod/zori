@@ -20,6 +20,7 @@ Zori is a Rust CLI and an embedded local web console. A YAML flow connects tasks
 Release history and the checks behind each feature are in the [log](log.md).
 **2026-11-25:** the built-in codex harness runs with `-s danger-full-access` (D15). Under `workspace-write` `.git` is read-only and the network is off, so headless codex could neither fetch nor commit. A live `zori run` codex task committed and reached GitHub, shipped in v0.2.3. Devin runs with `--permission-mode dangerous --respect-workspace-trust false` (personal store), OpenCode with `--auto` on first run and resume (v0.2.4); coddy has no rights switch and can do everything.
 **2026-11-26:** F1 (D13) is committed on local branch `refactor/one-engine`: the CLI and console drive `TrackedRun` and share its watchdog, questions and process spawn path; `zori run` retries, nudges and answers `ASK:` on a TTY, unattended with redirected stdin. [F1 verification](threads/f1-one-engine.md)
+**2026-11-26:** F2 is committed on the same branch: `src/runner/` (10 modules) and `src/ui/` (9 modules) split off their former 4931/3034-line files as a verified pure move. [review](threads/code-review-2026-11-24.md)
 **2026-11-25:** console UI audited — a config editor with no view for comparing agents. Redesign order and open D14 are in the [thread](threads/console-ui-redesign.md).
 **Verified 2026-11-25:** v0.2.4 released (OpenCode `--auto`; v0.2.3 brought codex `danger-full-access`): [release run](https://github.com/metravod/zori/actions/runs/45686074730) green on all four targets, all archives match SHA256SUMS, the macOS arm64 archive reports `zori 0.2.4`; after the [tap update](https://github.com/metravod/homebrew-tap/actions/runs/45687587060) `brew upgrade` installed 0.2.4. Earlier releases passed the same bar.
 **Verified 2026-11-22:** harnesses resolve built-in → `~/.zori/harnesses.yml` → a flow's `harnesses:` block everywhere (CLI listings, console picker, Fleet, planner brief); the ⚓ Fleet stores harness/model pairs in `~/.zori/fleet.json`; workflow skills live in `~/.zori/skills/` (D10, D11). See the [guide](../docs/guide.md#adding-a-harness-the-personal-store).
@@ -28,7 +29,7 @@ Release history and the checks behind each feature are in the [log](log.md).
 **Known defect:** stopping `zori ui` mid-attempt counts as a failure, starts a retry and leaves `state.json` non-terminal. See the [thread](threads/stale-status-after-dead-attempt.md).
 
 ## Next
-- Continue the engine review with the F2 file split and the remaining review work. [Review](threads/code-review-2026-11-24.md)
+- Push `refactor/one-engine` (F1+F2) and merge when the human approves; then redo F4 (history comments) and the remaining review work on main. [Follow-ups](threads/one-engine-followups.md)
 - Add a switch for agents' permission mode (D15): bypass stays the default, but a user can turn the dangerous mode off for every harness at once (personal setting, per flow, per task), mapped to each CLI's own flag (codex `-s`, Devin `--permission-mode`, opencode `--auto`, zcode `--mode`; coddy has none).
 - Validate the planner proposal and rerun interactions in a browser with installed agents.
 - Implement the agreed worktree design for parallel edits. See the [thread](threads/worktree-isolation.md).

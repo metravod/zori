@@ -1,5 +1,6 @@
 # Log
 
+- 2026-11-26 · opencode/GLM-5.3 · F2 redone on `refactor/one-engine` (ccf21f6): `src/runner.rs` (4931 lines) → 10 modules + 2 test files, `src/ui.rs` (3034) → 9 modules + 1 test file, roots keep the docs/imports and bind sibling names; pure move proven by a content-line multiset check (0 lost / 0 gained modulo `pub(super)`, dedent, structural lines; only content change is the `include_str!` base). 214 unit + 3 CLI tests, clippy `-D warnings` clean, 116 web cases → [review](threads/code-review-2026-11-24.md)
 - 2026-11-26 · opencode/GLM-5.3 · committed the restored F1 on `refactor/one-engine` (ba7ef62 + the staged one-engine work): `zori run` and the console drive `TrackedRun`; reviewed the diff, updated the guide's stale classic-runner claims, re-verified build, 214 unit + 3 CLI Rust tests, clippy `-D warnings`, 116 web cases and a terminal smoke run (required failure → exit 1, retry attempts r0/r1) → [F1](threads/f1-one-engine.md)
 
 - 2026-11-25 · codex/GPT-6 · Restored F1 on local branch `refactor/one-engine`. The CLI and console now share one execution loop and spawn path. Verified with 217 Rust tests, clean Clippy, 116 web cases and three pseudo-terminal checks → [F1](threads/f1-one-engine.md)
